@@ -1,0 +1,43 @@
+# Ignore node dependencies
+node_modules/
+
+# Environment files
+.env
+.env.*
+*.env
+!*.env.example
+
+template/
+.playwright-mcp
+# Logs
+logs
+*.log
+
+# OS and editor files
+.DS_Store
+.vscode/
+.idea/
+
+# Build outputs
+dist/
+build/
+coverage/
+
+# Misc
+*.local
+.env.*.local
+
+# Test
+*.test.js
+*.test.ts
+*.spec.js
+*.spec.ts
+
+# Server
+server/.env
+.qwen/
+# Client
+client/.env
+
+# Ignore templates
+template/*.html
