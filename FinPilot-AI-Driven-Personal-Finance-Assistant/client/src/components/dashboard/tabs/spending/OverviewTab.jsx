@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceLine, ComposedChart, CartesianGrid, Bar, PieChart, Pie, Cell, Line } from "recharts";
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceLine, ComposedChart, CartesianGrid, Bar, PieChart, Pie, Cell, Line, BarChart } from "recharts";
 import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, GitBranch, Info, PenLine, Plus, Sparkles, Tag, X, Settings, Pencil } from "lucide-react";
 import { catToIcon, getSpendingCategoryLabel, getSpendingCategoryMeta, ProGate, SPENDING_CATEGORY_META } from "../../dashboardShared.jsx";
 import api from "../../../../services/api";
@@ -124,6 +124,7 @@ export default function OverviewTab({
   const [breakdownMode, setBreakdownMode] = useState("expenses");
   const [spendViewMode, setSpendViewMode] = useState("chart");
   const [compareMenuOpen, setCompareMenuOpen] = useState(false);
+  const [selectedSpendMonthKey, setSelectedSpendMonthKey] = useState(null); // for spend chart month selection
   const [upcomingMonthOffset, setUpcomingMonthOffset] = useState(0);
   const [selectedCompareMonthKey, setSelectedCompareMonthKey] = useState(null);
   const [selectedTxId, setSelectedTxId] = useState(null);
@@ -182,6 +183,74 @@ export default function OverviewTab({
   }, [daysInMonth, expenseTransactions]);
 
   const effectiveBudget = budget?.amount || 0;
+
+  // ─── Compare month options ────────────────────────────────────────────────
+  const spendMonthOptions = useMemo(() => {
+    const options = [];
+    for (let offset = 0; offset < 6; offset += 1) {
+      const d = new Date(currentYear, currentMonth - offset, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const label = d.toLocaleDateString("en-US", {
+        month: "long",
+        year: "numeric",
+      });
+      options.push({ key, label, offset });
+    }
+    return options;
+  }, [currentMonth, currentYear]);
+
+  // Initialize selected spend month to current month
+  useEffect(() => {
+    if (!selectedSpendMonthKey && spendMonthOptions.length > 0) {
+      setSelectedSpendMonthKey(spendMonthOptions[0].key);
+    }
+  }, [spendMonthOptions, selectedSpendMonthKey]);
+
+  const selectedSpendMonthOption = useMemo(
+    () => spendMonthOptions.find((o) => o.key === selectedSpendMonthKey) || spendMonthOptions[0],
+    [spendMonthOptions, selectedSpendMonthKey],
+  );
+
+  // ─── Daily spending data for selected month ───────────────────────────────
+  const selectedSpendMonthData = useMemo(() => {
+    if (!selectedSpendMonthOption) return { year: currentYear, month: currentMonth, days: new Map(), daysInMonth: 0 };
+    
+    const parts = selectedSpendMonthOption.key.split("-");
+    const year = Number(parts[0]);
+    const month = Number(parts[1]) - 1;
+    const daysInSelectedMonth = new Date(year, month + 1, 0).getDate();
+    
+    const dayMap = new Map();
+    for (let day = 1; day <= daysInSelectedMonth; day += 1) dayMap.set(day, 0);
+    
+    apiTransactions.forEach((tx) => {
+      if (tx.type !== "expense") return;
+      const d = new Date(tx.date);
+      if (isNaN(d.getTime())) return;
+      if (d.getMonth() !== month || d.getFullYear() !== year) return;
+      dayMap.set(d.getDate(), (dayMap.get(d.getDate()) || 0) + Math.abs(tx.amount || 0));
+    });
+    
+    return { year, month, days: dayMap, daysInMonth: daysInSelectedMonth };
+  }, [selectedSpendMonthOption, apiTransactions]);
+
+  // ─── Chart data for selected month (daily breakdown) ───────────────────────
+  const selectedMonthChartData = useMemo(() => {
+    const maxValue = Math.max(...selectedSpendMonthData.days.values(), effectiveBudget || 250, 500);
+    let running = 0;
+    const points = [];
+    
+    for (let day = 1; day <= selectedSpendMonthData.daysInMonth; day += 1) {
+      running += selectedSpendMonthData.days.get(day) || 0;
+      points.push({
+        day,
+        spend: running,
+        budget: effectiveBudget || 0,
+      });
+    }
+    
+    return { points, maxValue };
+  }, [selectedSpendMonthData, effectiveBudget]);
 
   // ─── Compare month options ────────────────────────────────────────────────
   const compareMonthOptions = useMemo(() => {
@@ -358,6 +427,26 @@ export default function OverviewTab({
         net: (row.income || 0) - (row.expense || 0),
         income: row.income || 0,
         expense: row.expense || 0,
+      });
+    }
+    return items;
+  }, [currentMonth, currentYear, monthlyChart]);
+
+  // ─── 6-month spending chart data (for "Spend this month" section) ───────────
+  const sixMonthSpendData = useMemo(() => {
+    const items = [];
+    for (let offset = 5; offset >= 0; offset -= 1) {
+      const d = new Date(currentYear, currentMonth - offset, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const row = (monthlyChart || []).find((m) => m.month === key) || { income: 0, expense: 0 };
+      const isCurrentMonth = offset === 0;
+      items.push({
+        month: MONTH_NAMES[d.getMonth()],
+        key,
+        spend: row.expense || 0,
+        income: row.income || 0,
+        net: (row.income || 0) - (row.expense || 0),
+        isCurrentMonth,
       });
     }
     return items;
@@ -718,146 +807,144 @@ export default function OverviewTab({
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
                   <div>
                     <div style={{ fontSize: 32, fontWeight: 700, color: C.text, letterSpacing: "-0.04em", lineHeight: 1 }}>
-                      {formatAmount(Math.round(thisSpend || 0), { maximumFractionDigits: 0 })}
+                      {formatAmount(selectedMonthChartData.points[selectedMonthChartData.points.length - 1]?.spend || 0, { maximumFractionDigits: 0 })}
                     </div>
-                    <div style={{ marginTop: 8, fontSize: 13, color: C.muted, display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ffb95a", display: "inline-block" }} />
-                      {monthLabel}
-                      {selectedCompareOption && (
-                        <>
-                          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--text-muted)", display: "inline-block", marginLeft: 8 }} />
-                          <span style={{ opacity: 0.7 }}>{selectedCompareOption.label}</span>
-                        </>
-                      )}
+                    <div style={{ marginTop: 8, fontSize: 13, color: C.muted }}>
+                      {selectedSpendMonthOption?.label || monthLabel}
                     </div>
                   </div>
 
-                  {/* Compare month picker */}
-                  <div ref={compareMenuRef} style={{ position: "relative" }}>
-                    <button
-                      type="button"
-                      onClick={() => setCompareMenuOpen((prev) => !prev)}
-                      style={{
-                        border: `1px solid ${C.border}`, borderRadius: 99, background: C.white,
-                        color: C.text, padding: "8px 14px", fontSize: 12.5, fontWeight: 600,
-                        cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
-                      }}
-                    >
-                      <div style={{ width: 12, height: 12, borderRadius: "50%", background: selectedCompareOption ? "var(--text-muted)" : "var(--surface-muted)", border: selectedCompareOption ? "none" : `1px dashed ${C.muted}` }} />
-                      <span>{selectedCompareOption ? selectedCompareOption.label : "Compare month"}</span>
-                      <ChevronDown size={14} />
-                    </button>
+                  {/* Month selector dropdown */}
+                  {spendViewMode === "chart" && (
+                    <div ref={compareMenuRef} style={{ position: "relative" }}>
+                      <button
+                        type="button"
+                        onClick={() => setCompareMenuOpen((prev) => !prev)}
+                        style={{
+                          border: `1px solid ${C.border}`, borderRadius: 99, background: C.white,
+                          color: C.text, padding: "8px 14px", fontSize: 12.5, fontWeight: 600,
+                          cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
+                        }}
+                      >
+                        <span>{selectedSpendMonthOption?.label || "Select month"}</span>
+                        <ChevronDown size={14} />
+                      </button>
 
-                    {compareMenuOpen && (
-                      <div style={{
-                        position: "absolute", top: "calc(100% + 6px)", right: 0,
-                        minWidth: 180, maxHeight: 280, overflowY: "auto",
-                        background: C.white, border: `1px solid ${C.border}`,
-                        borderRadius: 14, boxShadow: "0 18px 44px rgba(0,0,0,0.18)", zIndex: 20,
-                      }}>
-                        {/* Option to clear comparison */}
-                        <button
-                          type="button"
-                          onClick={() => { setSelectedCompareMonthKey(null); setCompareMenuOpen(false); }}
-                          style={{
-                            width: "100%", border: "none",
-                            background: !selectedCompareMonthKey ? "var(--surface-muted)" : "transparent",
-                            color: C.muted, padding: "12px 16px", fontSize: 13, fontWeight: 500,
-                            textAlign: "left", cursor: "pointer", borderBottom: `1px solid ${C.border}`,
-                          }}
-                        >
-                          No comparison
-                        </button>
-                        {compareMonthOptions.length === 0 ? (
-                          <div style={{ padding: "12px 16px", fontSize: 13, color: C.muted }}>No previous months</div>
-                        ) : (
-                          compareMonthOptions.map((option) => (
+                      {compareMenuOpen && (
+                        <div style={{
+                          position: "absolute", top: "calc(100% + 6px)", right: 0,
+                          minWidth: 200, maxHeight: 280, overflowY: "auto",
+                          background: C.white, border: `1px solid ${C.border}`,
+                          borderRadius: 14, boxShadow: "0 18px 44px rgba(0,0,0,0.18)", zIndex: 20,
+                        }}>
+                          {spendMonthOptions.map((option) => (
                             <button
                               key={option.key}
                               type="button"
-                              onClick={() => { setSelectedCompareMonthKey(option.key); setCompareMenuOpen(false); }}
+                              onClick={() => { setSelectedSpendMonthKey(option.key); setCompareMenuOpen(false); }}
                               style={{
                                 width: "100%", border: "none",
-                                background: option.key === selectedCompareOption?.key ? "var(--surface-muted)" : "transparent",
+                                background: option.key === selectedSpendMonthKey ? "var(--surface-muted)" : "transparent",
                                 color: C.text, padding: "12px 16px", fontSize: 13,
-                                fontWeight: option.key === selectedCompareOption?.key ? 600 : 500,
+                                fontWeight: option.key === selectedSpendMonthKey ? 600 : 500,
                                 textAlign: "left", cursor: "pointer",
+                                borderBottom: `1px solid ${C.border}`,
                               }}
                             >
                               {option.label}
                             </button>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Chart view */}
-              {spendViewMode === "chart" && spendChartData.length > 0 ? (
-                <div style={{ width: "100%", minHeight: 213, padding: "10px 0 0" }}>
-                  <ResponsiveContainer width="100%" height={213}>
-                    <AreaChart
-                      data={spendChartData}
-                      margin={{ top: 16, right: 0, left: 0, bottom: 0 }}
-                    >
-                      <defs>
-                        <linearGradient id="colorCurrent" gradientTransform="rotate(90)">
-                          <stop offset="0%" stopColor="#ffb95a" stopOpacity={0.5} />
-                          <stop offset="100%" stopColor="#ffb95a" stopOpacity={0.05} />
-                        </linearGradient>
-                      </defs>
-                      <XAxis
-                        dataKey="day"
-                        axisLine={false}
-                        tickLine={false}
-                        ticks={[1, 8, 15, 22, 29].filter((d) => d <= daysInMonth)}
-                        tickFormatter={(d) => String(d).padStart(2, "0")}
-                        tick={{ fill: C.muted, fontSize: 11 }}
-                      />
-                      <YAxis hide domain={[0, chartMax]} />
-                      <Tooltip content={renderSpendTooltip} />
-                      <CartesianGrid vertical={false} stroke="var(--border-subtle)" strokeDasharray="4 4" />
-                      {effectiveBudget > 0 && (
-                        <ReferenceLine
-                          y={effectiveBudget}
-                          stroke="#ccc"
-                          strokeDasharray="4 4"
-                          label={{
-                            value: `${formatAmount(effectiveBudget, { maximumFractionDigits: 0 })} Budget`,
-                            position: "insideTopLeft",
-                            fill: C.muted,
-                            fontSize: 11,
-                            dy: -10,
+              {/* Chart view - Daily spending for selected month */}
+              {spendViewMode === "chart" ? (
+                selectedMonthChartData.points.length > 0 ? (
+                  <div style={{ width: "100%", minHeight: 248, padding: "10px 0 0" }}>
+                    <ResponsiveContainer width="100%" height={248}>
+                      <AreaChart
+                        data={selectedMonthChartData.points}
+                        margin={{ top: 16, right: 50, left: 0, bottom: 20 }}
+                        key={`spend-${selectedSpendMonthKey}`}
+                      >
+                        <defs>
+                          <linearGradient id="colorSpend" gradientTransform="rotate(90)">
+                            <stop offset="0%" stopColor="#ffb95a" stopOpacity={0.5} />
+                            <stop offset="100%" stopColor="#ffb95a" stopOpacity={0.05} />
+                          </linearGradient>
+                        </defs>
+                        <XAxis
+                          dataKey="day"
+                          axisLine={false}
+                          tickLine={false}
+                          ticks={[1, 8, 15, 22, 29].filter((d) => d <= selectedSpendMonthData.daysInMonth)}
+                          tickFormatter={(d) => String(d).padStart(2, "0")}
+                          tick={{ fill: C.muted, fontSize: 11 }}
+                          height={24}
+                        />
+                        <YAxis 
+                          axisLine={false}
+                          tickLine={false}
+                          orientation="right"
+                          domain={[0, selectedMonthChartData.maxValue]}
+                          tickFormatter={(v) => formatAmount(v, { maximumFractionDigits: 0 })}
+                          tick={{ fill: C.muted, fontSize: 11 }}
+                          width={45}
+                        />
+                        <Tooltip 
+                          content={({ active, payload }) => {
+                            if (!active || !payload?.length) return null;
+                            const data = payload[0].payload;
+                            return (
+                              <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "10px 12px", boxShadow: "0 12px 30px rgba(0,0,0,0.22)" }}>
+                                <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>Day {String(data.day).padStart(2, "0")}</div>
+                                <div style={{ fontSize: 12, color: C.text, fontWeight: 600 }}>
+                                  {MONTH_NAMES[selectedSpendMonthData.month]}: {formatAmount(data.spend, { maximumFractionDigits: 0 })}
+                                </div>
+                              </div>
+                            );
                           }}
                         />
-                      )}
-                      {/* Compare line — only render when a month is selected AND data exists */}
-                      {selectedCompareOption && compareExpenseByDay && (
-                        <Line
+                        <CartesianGrid vertical={false} stroke="var(--border-subtle)" strokeDasharray="4 4" />
+                        {effectiveBudget > 0 && (
+                          <ReferenceLine
+                            y={effectiveBudget}
+                            stroke="#ccc"
+                            strokeDasharray="4 4"
+                            label={{
+                              value: `${formatAmount(effectiveBudget, { maximumFractionDigits: 0 })} Budget`,
+                              position: "insideTopRight",
+                              fill: C.muted,
+                              fontSize: 11,
+                              dx: -10,
+                            }}
+                          />
+                        )}
+                        <Area
                           type="monotone"
-                          dataKey="compareSpend"
-                          stroke="var(--text-muted)"
+                          dataKey="spend"
+                          stroke="#ffb95a"
                           strokeWidth={2}
-                          strokeDasharray="5 5"
-                          dot={false}
+                          fill="url(#colorSpend)"
                           connectNulls={false}
-                          activeDot={{ r: 4, stroke: C.white, strokeWidth: 2, fill: "var(--text-muted)" }}
+                          activeDot={{ r: 4, stroke: C.white, strokeWidth: 2, fill: "#ffb95a" }}
                         />
-                      )}
-                      <Area
-                        type="monotone"
-                        dataKey="spend"
-                        stroke="#ffb95a"
-                        strokeWidth={2}
-                        fill="url(#colorCurrent)"
-                        connectNulls={false}
-                        activeDot={{ r: 4, stroke: C.white, strokeWidth: 2, fill: "#ffb95a" }}
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  /* No data state */
+                  <div style={{ width: "100%", minHeight: 248, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
+                    <div style={{ textAlign: "center", color: C.muted }}>
+                      <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 8 }}>No spending data for {selectedSpendMonthOption?.label}</div>
+                      <div style={{ fontSize: 12 }}>Add transactions to see your spending chart</div>
+                    </div>
+                  </div>
+                )
               ) : (
                 /* Calendar view */
                 <div style={{ padding: "20px 16px 16px" }}>
@@ -1062,65 +1149,88 @@ export default function OverviewTab({
                   <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.02em" }}>Expenses vs net cash flow</div>
                 </div>
 
-                {/* Bar + line chart */}
-                <div style={{ width: "100%", minHeight: 200, marginBottom: 20 }}>
-                  <ResponsiveContainer width="100%" height={200}>
-                    <ComposedChart data={reportChartModeData} margin={{ top: 10, right: 0, bottom: 0, left: 0 }}>
+                {/* Bar chart - Income and Expenses */}
+                <div style={{ width: "100%", minHeight: 248 }}>
+                  <ResponsiveContainer width="100%" height={248}>
+                    <BarChart data={reportChartData} margin={{ top: 4, right: 10, bottom: 0, left: 0 }} barGap={8}>
                       <CartesianGrid vertical={false} stroke="var(--border-subtle)" strokeDasharray="4 4" />
-                      <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: C.muted, fontSize: 11 }} />
-                      <YAxis
-                        orientation="right"
+                      <XAxis
+                        dataKey="month"
+                        tick={{ fontSize: 11, fill: C.muted }}
                         axisLine={false}
                         tickLine={false}
-                        ticks={reportYAxisTicks}
-                        domain={[reportLowerBound, 0]}
-                        tickFormatter={(v) => formatAmount(v, { maximumFractionDigits: 0 })}
-                        tick={{ fill: C.muted, fontSize: 11 }}
                       />
-                      <Tooltip content={renderReportTooltip} />
-                      <Bar dataKey="expenseBar" fill="#ffb95a" radius={[4, 4, 0, 0]} barSize={20} />
-                      <Line type="monotone" dataKey="metric" stroke={C.text} strokeWidth={2} dot={{ r: 3, fill: C.text }} activeDot={{ r: 5, fill: C.text }} />
-                    </ComposedChart>
+                      <YAxis
+                        axisLine={false}
+                        tickLine={false}
+                        orientation="right"
+                        tickFormatter={(v) => formatAmount(v, { maximumFractionDigits: 0 })}
+                        tick={{ fontSize: 11, fill: C.muted }}
+                      />
+                      <Tooltip content={renderReportTooltip} cursor={{ fill: "rgba(0,0,0,0.02)" }} />
+                      <Bar
+                        dataKey="income"
+                        name="Income"
+                        radius={[6, 6, 0, 0]}
+                        fill="#0d9488"
+                        barSize={24}
+                      />
+                      <Bar
+                        dataKey="expense"
+                        name="Expenses"
+                        radius={[6, 6, 0, 0]}
+                        fill="#ffb95a"
+                        barSize={24}
+                      />
+                    </BarChart>
                   </ResponsiveContainer>
-                </div>
-
-                {/* Single consolidated table */}
-                <div style={{ borderTop: `1px solid ${C.border}` }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr style={{ background: "var(--surface-muted)" }}>
-                        <th style={{ padding: "10px 12px", textAlign: "left", fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" }}>Month</th>
-                        <th style={{ padding: "10px 12px", textAlign: "right", fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" }}>Income</th>
-                        <th style={{ padding: "10px 12px", textAlign: "right", fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" }}>Expenses</th>
-                        <th style={{ padding: "10px 12px", textAlign: "right", fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase" }}>Net</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {reportChartData.slice().reverse().map((row, idx, arr) => {
-                        const net = row.net;
-                        return (
-                          <tr
-                            key={row.key}
-                            style={{ borderBottom: idx === arr.length - 1 ? "none" : `1px solid ${C.border}` }}
-                          >
-                            <td style={{ padding: "10px 12px", fontSize: 13, color: C.text, fontWeight: 500 }}>{row.month}</td>
-                            <td style={{ padding: "10px 12px", textAlign: "right", fontSize: 13, color: "#16a34a" }}>
-                              {formatAmount(row.income, { maximumFractionDigits: 0 })}
-                            </td>
-                            <td style={{ padding: "10px 12px", textAlign: "right", fontSize: 13, color: C.text }}>
-                              {formatAmount(row.expense, { maximumFractionDigits: 0 })}
-                            </td>
-                            <td style={{ padding: "10px 12px", textAlign: "right", fontSize: 13, fontWeight: 600, color: net >= 0 ? "#16a34a" : "#ef4444" }}>
-                              {formatAmount(net, { maximumFractionDigits: 0 })}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
                 </div>
               </div>
             </div>
+
+            {/* ── Reports Table ── */}
+            <ProGate isPro={isPro} navigate={navigate}>
+              <div style={panelStyle(C)}>
+                <div style={{ padding: "16px 16px 14px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  {sectionLabel("Monthly summary")}
+                </div>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: "var(--surface-muted)", borderBottom: `1px solid ${C.border}` }}>
+                      <th style={{ padding: "12px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.02em" }}>Month</th>
+                      <th style={{ padding: "12px 16px", textAlign: "right", fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.02em" }}>Income</th>
+                      <th style={{ padding: "12px 16px", textAlign: "right", fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.02em" }}>Expenses</th>
+                      <th style={{ padding: "12px 16px", textAlign: "right", fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.02em" }}>Net Cash Flow</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reportChartData.slice().reverse().map((row, idx, arr) => {
+                      const net = row.net;
+                      return (
+                        <tr
+                          key={row.key}
+                          style={{ 
+                            borderBottom: idx === arr.length - 1 ? "none" : `1px solid ${C.border}`,
+                            background: idx % 2 === 0 ? C.white : "var(--surface-muted)"
+                          }}
+                        >
+                          <td style={{ padding: "12px 16px", fontSize: 13, color: C.text, fontWeight: 500 }}>{row.month}</td>
+                          <td style={{ padding: "12px 16px", textAlign: "right", fontSize: 13, color: "#16a34a", fontWeight: 500 }}>
+                            {formatAmount(row.income, { maximumFractionDigits: 0 })}
+                          </td>
+                          <td style={{ padding: "12px 16px", textAlign: "right", fontSize: 13, color: C.text, fontWeight: 500 }}>
+                            {formatAmount(row.expense, { maximumFractionDigits: 0 })}
+                          </td>
+                          <td style={{ padding: "12px 16px", textAlign: "right", fontSize: 13, fontWeight: 600, color: net >= 0 ? "#16a34a" : "#ef4444" }}>
+                            {formatAmount(net, { maximumFractionDigits: 0 })}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </ProGate>
           </ProGate>
         </div>
 

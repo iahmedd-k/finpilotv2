@@ -66,6 +66,19 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
   }, [selectedMonth, timePeriod, breakdownTab, viewBy]);
 
   useEffect(() => {
+    // When timePeriod changes, reset selectedMonth to current period
+    const [cy, cm] = currentMonth.split("-").map(Number);
+    if (timePeriod === "Yearly") {
+      setSelectedMonth(String(cy));
+    } else if (timePeriod === "Quarterly") {
+      const cq = Math.ceil(cm / 3);
+      setSelectedMonth(`${cy}-Q${cq}`);
+    } else if (timePeriod === "Monthly") {
+      setSelectedMonth(currentMonth);
+    }
+  }, [timePeriod, currentMonth]);
+
+  useEffect(() => {
     let ignore = false;
     const loadBudget = async () => {
       if (timePeriod !== "Monthly") {
@@ -97,40 +110,77 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
   }, [monthlyChart, currentMonth]);
 
   const prevMonthKey = useMemo(() => {
-    const [y,mo] = selectedMonth.split("-").map(Number);
-    const d = new Date(y, mo-2, 1);
-    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-  }, [selectedMonth]);
+    if (timePeriod === "Yearly") {
+      return String(parseInt(selectedMonth) - 1);
+    } else if (timePeriod === "Quarterly") {
+      const parts = selectedMonth.split("-");
+      const y = parseInt(parts[0]);
+      const q = parseInt(parts[1]?.replace("Q", "") || "1");
+      if (q === 1) return `${y - 1}-Q4`;
+      return `${y}-Q${q - 1}`;
+    } else {
+      const [y,mo] = selectedMonth.split("-").map(Number);
+      const d = new Date(y, mo-2, 1);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+    }
+  }, [selectedMonth, timePeriod]);
 
   const monthTx = useMemo(() => {
-    const [y, mo] = selectedMonth.split("-").map(Number);
+    let y, mo;
+    
+    if (timePeriod === "Yearly") {
+      y = parseInt(selectedMonth);
+    } else if (timePeriod === "Quarterly") {
+      const parts = selectedMonth.split("-");
+      y = parseInt(parts[0]);
+      const q = parseInt(parts[1]?.replace("Q", "") || "1");
+      const startMo = (q - 1) * 3 + 1;
+      return apiTransactions.filter(t => {
+        const d = new Date(t.date);
+        const ty = d.getFullYear();
+        const tm = d.getMonth() + 1;
+        const tq = Math.ceil(tm / 3);
+        return ty === y && tq === q;
+      });
+    } else {
+      [y, mo] = selectedMonth.split("-").map(Number);
+    }
+    
     return apiTransactions.filter(t => {
       const d = new Date(t.date);
       const ty = d.getFullYear();
       const tm = d.getMonth() + 1;
       
       if (timePeriod === "Yearly") return ty === y;
-      if (timePeriod === "Quarterly") {
-        const q = Math.ceil(mo / 3);
-        const tq = Math.ceil(tm / 3);
-        return ty === y && tq === q;
-      }
       return ty === y && tm === mo;
     });
   }, [apiTransactions, selectedMonth, timePeriod]);
 
   const prevMonthTx = useMemo(() => {
-    const [y, mo] = prevMonthKey.split("-").map(Number);
+    let y, mo;
+    
+    if (timePeriod === "Yearly") {
+      y = parseInt(prevMonthKey);
+    } else if (timePeriod === "Quarterly") {
+      const parts = prevMonthKey.split("-");
+      y = parseInt(parts[0]);
+      const q = parseInt(parts[1]?.replace("Q", "") || "1");
+      return apiTransactions.filter(t => {
+        const d = new Date(t.date);
+        const ty = d.getFullYear();
+        const tm = d.getMonth() + 1;
+        const tq = Math.ceil(tm / 3);
+        return ty === y && tq === q;
+      });
+    } else {
+      [y, mo] = prevMonthKey.split("-").map(Number);
+    }
+    
     return apiTransactions.filter(t => {
       const d = new Date(t.date);
       const ty = d.getFullYear();
       const tm = d.getMonth() + 1;
-      if (timePeriod === "Yearly") return ty === y - 1;
-      if (timePeriod === "Quarterly") {
-        const q = Math.ceil(mo / 3);
-        const tq = Math.ceil(tm / 3);
-        return ty === y && tq === q; 
-      }
+      if (timePeriod === "Yearly") return ty === y;
       return ty === y && tm === mo;
     });
   }, [apiTransactions, prevMonthKey, timePeriod]);
@@ -200,9 +250,16 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
     return new Date(y,mo-1,1).toLocaleDateString("en-US",{month:"short",year:"numeric"});
   };
   const selectedPeriodLabel = useMemo(() => {
+    if (timePeriod === "Yearly") {
+      return selectedMonth;
+    }
+    if (timePeriod === "Quarterly") {
+      const parts = selectedMonth.split("-");
+      const y = parseInt(parts[0]);
+      const q = parseInt(parts[1]?.replace("Q", "") || "1");
+      return `Q${q} ${y}`;
+    }
     const [y, mo] = selectedMonth.split("-").map(Number);
-    if (timePeriod === "Yearly") return String(y);
-    if (timePeriod === "Quarterly") return `Q${Math.ceil(mo / 3)} ${y}`;
     return fmtMonth(selectedMonth);
   }, [selectedMonth, timePeriod]);
 
@@ -323,18 +380,74 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
   const Timeline = (() => {
     const periodList = [];
     const [cy2, cm2] = currentMonth.split("-").map(Number);
-    for (let i = 23; i >= 0; i--) {
-      const d = new Date(cy2, cm2 - 1 - i, 1);
-      periodList.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
-    }
     const monthData = {};
-    apiTransactions.forEach(t => {
-      const d = new Date(t.date);
-      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-      if (!monthData[key]) monthData[key] = { income:0, expense:0 };
-      if (t.type === "income")  monthData[key].income  += Math.abs(t.amount||0);
-      if (t.type === "expense") monthData[key].expense += Math.abs(t.amount||0);
-    });
+
+    if (timePeriod === "Yearly") {
+      // Generate 12 past years + current year + 12 future years (25 total, same ratio as monthly)
+      for (let i = 12; i >= 0; i--) {
+        const year = cy2 - i;
+        periodList.push(String(year));
+      }
+      for (let i = 1; i <= 12; i++) {
+        periodList.push(String(cy2 + i));
+      }
+      apiTransactions.forEach(t => {
+        const d = new Date(t.date);
+        const key = String(d.getFullYear());
+        if (!monthData[key]) monthData[key] = { income:0, expense:0 };
+        if (t.type === "income")  monthData[key].income  += Math.abs(t.amount||0);
+        if (t.type === "expense") monthData[key].expense += Math.abs(t.amount||0);
+      });
+    } else if (timePeriod === "Quarterly") {
+      // Generate 12 past quarters + current quarter + 12 future quarters (25 total, same as monthly)
+      const currentQ = Math.ceil(cm2 / 3);
+      for (let i = 12; i >= 0; i--) {
+        let q = currentQ - i;
+        let y = cy2;
+        while (q <= 0) {
+          q += 4;
+          y -= 1;
+        }
+        const key = `${y}-Q${q}`;
+        if (!periodList.includes(key)) periodList.push(key);
+      }
+      for (let i = 1; i <= 12; i++) {
+        let q = currentQ + i;
+        let y = cy2;
+        while (q > 4) {
+          q -= 4;
+          y += 1;
+        }
+        const key = `${y}-Q${q}`;
+        if (!periodList.includes(key)) periodList.push(key);
+      }
+      apiTransactions.forEach(t => {
+        const d = new Date(t.date);
+        const q = Math.ceil((d.getMonth() + 1) / 3);
+        const key = `${d.getFullYear()}-Q${q}`;
+        if (!monthData[key]) monthData[key] = { income:0, expense:0 };
+        if (t.type === "income")  monthData[key].income  += Math.abs(t.amount||0);
+        if (t.type === "expense") monthData[key].expense += Math.abs(t.amount||0);
+      });
+    } else {
+      // Monthly (original logic) - show 12 past months + current month + 12 future months
+      for (let i = 12; i >= 0; i--) {
+        const d = new Date(cy2, cm2 - 1 - i, 1);
+        periodList.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
+      }
+      for (let i = 1; i <= 12; i++) {
+        const d = new Date(cy2, cm2 - 1 + i, 1);
+        periodList.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
+      }
+      apiTransactions.forEach(t => {
+        const d = new Date(t.date);
+        const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+        if (!monthData[key]) monthData[key] = { income:0, expense:0 };
+        if (t.type === "income")  monthData[key].income  += Math.abs(t.amount||0);
+        if (t.type === "expense") monthData[key].expense += Math.abs(t.amount||0);
+      });
+    }
+    
     const maxVal = Math.max(1, ...periodList.map(m => Math.max(monthData[m]?.income||0, monthData[m]?.expense||0)));
     const BAR_MAX_H = isMobile ? 22 : 28;
     const selIdx = periodList.indexOf(selectedMonth);
@@ -352,7 +465,17 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
           <div style={{ display:"flex", alignItems:"flex-end", gap:0, minWidth:"max-content", borderBottom:`1px solid ${C.border2}` }}>
             {periodList.map((m, idx) => {
               const isSelected = m === selectedMonth;
-              const isCurrentPeriod = m === currentMonth;
+              let isCurrentPeriod = false;
+              if (timePeriod === "Yearly") {
+                const [currentYear] = currentMonth.split("-").map(Number);
+                isCurrentPeriod = parseInt(m) === currentYear;
+              } else if (timePeriod === "Quarterly") {
+                const [cy, cm] = currentMonth.split("-").map(Number);
+                const cq = Math.ceil(cm / 3);
+                isCurrentPeriod = m === `${cy}-Q${cq}`;
+              } else {
+                isCurrentPeriod = m === currentMonth;
+              }
               const data = monthData[m] || { income:0, expense:0 };
               const hasData = data.income > 0 || data.expense > 0;
               const incH = hasData ? Math.max(3, Math.round((data.income / maxVal) * BAR_MAX_H)) : 0;
@@ -398,7 +521,7 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
                       )}
                     </div>
                     <span style={{ fontSize:isMobile?10:11, fontWeight:isSelected?700:400, color:isSelected?C.teal:C.muted, whiteSpace:"nowrap" }}>
-                      {fmtMonthShort(m)}
+                      {timePeriod === "Yearly" ? m : (timePeriod === "Quarterly" ? m : fmtMonthShort(m))}
                     </span>
                     {isSelected && <div style={{ position:"absolute", bottom:0, left:10, right:10, height:2, background:C.teal, borderRadius:99 }}/>}
                   </button>
@@ -513,7 +636,7 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
         <div style={{ display:"flex", alignItems:isMobile?"stretch":"flex-start", justifyContent:"space-between", gap:12, marginBottom:12, padding:`0 ${isMobile?14:20}px`, flexDirection:isMobile?"column":"row" }}>
           <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
             <div style={{ fontSize:9, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.10em" }}>Breakdown Period</div>
-            <div style={{ fontSize:14, fontWeight:700, color:C.text }}>{selectedPeriodLabel}</div>
+            <div style={{ fontSize:14, fontWeight:700, color:C.text }}>{timePeriod}</div>
           </div>
           <div style={{ display:"flex", gap:8, flexWrap:"wrap", justifyContent:isMobile?"flex-start":"flex-end", alignItems:"center" }}>
             <div className="period-drop" style={{ position:"relative", zIndex:200 }}>

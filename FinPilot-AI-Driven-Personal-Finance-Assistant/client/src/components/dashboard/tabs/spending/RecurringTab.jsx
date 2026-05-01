@@ -476,19 +476,6 @@ export default function RecurringTab({ C, apiTransactions = [], openAdd, transac
             </div>
           </div>
 
-          {/* Credit Cards Placeholder Card */}
-          <div style={panelStyle(C)}>
-            <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.borderSoft}` }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>Credit card bills</span>
-            </div>
-            <div style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "center", gap: 16, textAlign: "center" }}>
-              <div style={{ color: C.muted }}>
-                <LinkIcon size={24} />
-              </div>
-              <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>No credit card bills found in your accounts</p>
-            </div>
-          </div>
-
         </div>
 
       </div>
@@ -575,9 +562,11 @@ export default function RecurringTab({ C, apiTransactions = [], openAdd, transac
                 <textarea value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} rows={4} placeholder="Notes, billing details, or reminder" style={{ width: "100%", border: `1px solid ${C.border}`, borderRadius: 12, background: "var(--surface-muted)", color: C.text, padding: "12px 14px", fontSize: 13.5, fontFamily: "inherit", boxSizing: "border-box", resize: "vertical" }} />
               </div>
             </div>
-            <div style={{ padding: "0 20px 20px", display: "flex", justifyContent: "flex-end", gap: 10, flexDirection: isMobile ? "column-reverse" : "row" }}>
-              <button type="button" onClick={closeModal} style={{ minWidth: 112, height: 44, borderRadius: 12, border: `1px solid ${C.border}`, background: C.white, color: C.text, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>Cancel</button>
-              <button type="button" disabled={saving || !form.merchant.trim() || !form.amount} onClick={submitRecurring} style={{ minWidth: 144, height: 44, borderRadius: 12, border: "none", background: C.strong, color: C.onStrong, cursor: saving ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 700, opacity: saving ? 0.7 : 1 }}>
+            <div style={{ padding: "20px 20px", borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "flex-end", gap: 12, flexDirection: isMobile ? "column-reverse" : "row" }}>
+              <button type="button" onClick={closeModal} style={{ flex: isMobile ? 1 : "auto", minWidth: 120, height: 44, borderRadius: 12, border: `1px solid ${C.border}`, background: C.white, color: C.text, cursor: "pointer", fontFamily: "inherit", fontWeight: 600, fontSize: 14, transition: "all 0.2s" }}>
+                Cancel
+              </button>
+              <button type="button" disabled={saving || !form.merchant.trim() || !form.amount} onClick={submitRecurring} style={{ flex: isMobile ? 1 : "auto", minWidth: 140, height: 44, borderRadius: 12, border: "none", background: C.strong, color: C.onStrong, cursor: saving ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 14, opacity: saving || (!form.merchant.trim() || !form.amount) ? 0.6 : 1, transition: "all 0.2s" }}>
                 {saving ? "Saving..." : "Create recurring"}
               </button>
             </div>
