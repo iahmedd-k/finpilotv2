@@ -10,7 +10,7 @@ const cryptoAssetSchema = new mongoose.Schema({
 
   assetType: {
     type: String,
-    enum: ["crypto", "cash", "vehicle", "property", "private_equity", "insurance", "valuables", "pension", "debt", "other"],
+    enum: ["crypto", "equity", "cash", "vehicle", "property", "private_equity", "insurance", "valuables", "pension", "debt", "other"],
     default: "crypto",
   },
 
@@ -18,6 +18,8 @@ const cryptoAssetSchema = new mongoose.Schema({
   name:        { type: String, trim: true },
   buyingPrice: { type: Number, min: 0 },
   currentValue: { type: Number, min: 0 },
+  ticker:      { type: String, trim: true, uppercase: true },
+  currentPrice: { type: Number, min: 0 },
 
   // ── Crypto-only fields ───────────────────────────────
   coin:     { type: String, trim: true },

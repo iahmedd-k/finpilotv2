@@ -12,6 +12,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "react-router-dom";
 import {
   AreaChart, Area, PieChart, Pie, Cell,
   XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -28,7 +29,7 @@ import {
 } from "lucide-react";
 
 // ── Shared (../dashboardShared — one level up from tabs/) ─────
-import { C, CAT_COLORS, catToIcon, dedupToast, ProGate } from "../dashboardShared.jsx";
+import { C, CAT_COLORS, catToIcon, dedupToast, ProGate, getSpendingCategoryMeta } from "../dashboardShared.jsx";
 
 // ── Services (../../../services/...) ─────────────────────────
 import { transactionService } from "../../../services/transactionService";
@@ -45,6 +46,7 @@ import SpendingBreakdownTab from "./spending/BreakdownTab";
 import SpendingTransactionsPage from "./spending/TransactionsPage";
 import SpendingReportsTab from "./spending/ReportsTab";
 import SpendingRecurringTab from "./spending/RecurringTab";
+import SpendingSettingsTab from "./spending/SettingsTab";
 
 // ── Mobile hook ───────────────────────────────────────────────
 function useIsMobile(breakpoint = 640) {
@@ -74,17 +76,148 @@ const sortTransactionsNewestFirst = (items = []) => (
     return String(b?._id || "").localeCompare(String(a?._id || ""));
   })
 );
+const buildMonthlyChartFromTransactions = (items = []) => {
+  const now = new Date();
+  const monthlyMap = new Map();
 
-function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReached, navigate, toast, setAddModalOpen, pushNotif, summary, monthlyChart = [], apiTransactions = [], isMobile, refreshUser, budget, categoryBreakdown: apiCategoryBreakdown, onBudgetSaved, setShowAdvisor }) {
+  items.forEach((tx) => {
+    if (!tx?.date) return;
+    const txDate = new Date(tx.date);
+    if (Number.isNaN(txDate.getTime())) return;
+    const key = `${txDate.getFullYear()}-${String(txDate.getMonth() + 1).padStart(2, "0")}`;
+    const row = monthlyMap.get(key) || { month: key, income: 0, expense: 0, net: 0 };
+    const amount = Math.abs(Number(tx.amount) || 0);
+    if (tx.type === "income") row.income += amount;
+    else row.expense += amount;
+    row.net = row.income - row.expense;
+    monthlyMap.set(key, row);
+  });
+
+  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const firstMonthKey = [...monthlyMap.keys()].sort((a, b) => a.localeCompare(b))[0] || currentMonthKey;
+  const [startYear, startMonth] = firstMonthKey.split("-").map(Number);
+  const cursor = new Date(startYear, (startMonth || 1) - 1, 1);
+  const end = new Date(now.getFullYear(), now.getMonth(), 1);
+  const rows = [];
+
+  while (cursor <= end) {
+    const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`;
+    rows.push(monthlyMap.get(key) || { month: key, income: 0, expense: 0, net: 0 });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  return rows;
+};
+const getLatestTransactionMonthKey = (items = []) => {
+  const timestamps = (items || [])
+    .map((tx) => new Date(tx?.date).getTime())
+    .filter((value) => Number.isFinite(value));
+  if (!timestamps.length) return new Date().toISOString().slice(0, 7);
+  return new Date(Math.max(...timestamps)).toISOString().slice(0, 7);
+};
+
+const DEFAULT_SPENDING_SETTINGS = {
+  budgetSettings: {
+    defaultMonthlyBudget: 0,
+    budgetWarning50: true,
+    budgetWarning80: true,
+    budgetWarning100: true,
+    carryForwardBudget: true,
+    resetPeriod: "monthly",
+  },
+  categorySettings: {
+    hiddenCategoryIds: [],
+  },
+  alertSettings: {
+    notificationsEnabled: true,
+    categorySpikeAlerts: true,
+    categorySpikePercent: 25,
+    largeTransactionAlerts: true,
+    largeTransactionAmount: 500,
+    recurringReminderAlerts: true,
+  },
+  recurringSettings: {
+    reminderDaysBefore: 3,
+    autoDetectRecurring: true,
+    showInferredRecurring: true,
+    defaultExpenseCategory: "Subscriptions",
+    defaultIncomeCategory: "Salary",
+  },
+  transactionPreferences: {
+    defaultReviewStatus: "needs_review",
+    includeHiddenInAnalytics: false,
+    includeRecurringInBudget: true,
+    defaultSortDirection: "desc",
+  },
+  reportPreferences: {
+    defaultRange: "last_6_months",
+    defaultTab: "cashflow",
+    defaultViewBy: "Category",
+  },
+};
+
+const normalizeSpendingSettings = (value = {}) => ({
+  budgetSettings: {
+    ...DEFAULT_SPENDING_SETTINGS.budgetSettings,
+    ...(value?.budgetSettings || {}),
+  },
+  categorySettings: {
+    ...DEFAULT_SPENDING_SETTINGS.categorySettings,
+    ...(value?.categorySettings || {}),
+    hiddenCategoryIds: Array.isArray(value?.categorySettings?.hiddenCategoryIds)
+      ? [...new Set(value.categorySettings.hiddenCategoryIds.filter(Boolean))]
+      : [],
+  },
+  alertSettings: {
+    ...DEFAULT_SPENDING_SETTINGS.alertSettings,
+    ...(value?.alertSettings || {}),
+  },
+  recurringSettings: {
+    ...DEFAULT_SPENDING_SETTINGS.recurringSettings,
+    ...(value?.recurringSettings || {}),
+  },
+  transactionPreferences: {
+    ...DEFAULT_SPENDING_SETTINGS.transactionPreferences,
+    ...(value?.transactionPreferences || {}),
+  },
+  reportPreferences: {
+    ...DEFAULT_SPENDING_SETTINGS.reportPreferences,
+    ...(value?.reportPreferences || {}),
+  },
+});
+
+function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReached, navigate, toast, setAddModalOpen, pushNotif, summary, monthlyChart = [], apiTransactions = [], isMobile, refreshUser, budget, categoryBreakdown: apiCategoryBreakdown, onBudgetSaved, setShowAdvisor, spendingSettings }) {
   const { user } = useAuthContext();
+  const location = useLocation();
   const preferredCurrency = getUserCurrency(user);
   const [spendTab, setSpendTab] = useState("overview");
   const [addOpen,  setAddOpen]  = useState(false);
   const [addMode,  setAddMode]  = useState("manual");
   const isMobileLocal = useIsMobile();
   const ROUTES_SP = ROUTES;
+  const resolvedSettings = useMemo(() => normalizeSpendingSettings(spendingSettings), [spendingSettings]);
+  const hiddenCategoryIds = resolvedSettings.categorySettings.hiddenCategoryIds || [];
+  const includeHiddenInAnalytics = !!resolvedSettings.transactionPreferences.includeHiddenInAnalytics;
+  const analyticsTransactions = useMemo(() => (
+    (apiTransactions || []).filter((tx) => {
+      if (!includeHiddenInAnalytics && tx?.isHidden) return false;
+      if (tx?.type === "expense" && hiddenCategoryIds.includes(getSpendingCategoryMeta(tx.category).id)) return false;
+      return true;
+    })
+  ), [apiTransactions, hiddenCategoryIds, includeHiddenInAnalytics]);
+  const analyticsMonthlyChart = useMemo(
+    () => buildMonthlyChartFromTransactions(analyticsTransactions),
+    [analyticsTransactions]
+  );
 
-  const emptyForm = { merchant:"", category:"Dining", amount:"", type:"expense", date: new Date().toISOString().slice(0,10), notes:"" };
+  const emptyForm = useMemo(() => ({
+    merchant:"",
+    category: resolvedSettings.recurringSettings.defaultExpenseCategory || "Dining",
+    amount:"",
+    type:"expense",
+    date: new Date().toISOString().slice(0,10),
+    notes:"",
+  }), [resolvedSettings.recurringSettings.defaultExpenseCategory]);
   const [form, setForm]         = useState(emptyForm);
   const [formLoading, setFormLoading] = useState(false);
 
@@ -96,6 +229,15 @@ function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReache
   const [csvError,    setCsvError]    = useState("");
 
   const REQUIRED_FIELDS = ["date","merchant","amount","type"];
+
+  useEffect(() => {
+    const spend = new URLSearchParams(location.search).get("spend");
+    if (spend === "settings") setSpendTab("settings");
+  }, [location.search]);
+
+  useEffect(() => {
+    setForm((prev) => (prev.merchant || prev.amount || prev.notes ? prev : emptyForm));
+  }, [emptyForm]);
 
   const openAdd = () => {
     if (txLimitReached) {
@@ -120,6 +262,7 @@ function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReache
         type:     form.type,
         date:     form.date,
         notes:    form.notes.trim(),
+        reviewStatus: resolvedSettings.transactionPreferences.defaultReviewStatus,
       });
       queryClient.invalidateQueries({ queryKey: ["transactions"] });
       queryClient.invalidateQueries({ queryKey: ["transactions-page"] });
@@ -193,6 +336,7 @@ function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReache
           type,
           date:     row[csvMapping.date]||new Date().toISOString().slice(0,10),
           notes:    csvMapping.notes ? row[csvMapping.notes]||"" : "",
+          reviewStatus: resolvedSettings.transactionPreferences.defaultReviewStatus,
         };
       }).filter(t => t.amount > 0);
       for (const tx of txns) {
@@ -211,21 +355,25 @@ function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReache
   };
 
   const catMap = {};
-  apiTransactions.filter(t=>t.type==="expense").forEach(t => {
+  analyticsTransactions.filter(t=>t.type==="expense").forEach(t => {
     catMap[t.category||"Other"] = (catMap[t.category||"Other"]||0) + Math.abs(t.amount||0);
   });
   const catBreakdown = Object.entries(catMap).map(([cat,total])=>({cat,total})).sort((a,b)=>b.total-a.total).slice(0,6);
   const totalSpendAll = catBreakdown.reduce((s,c)=>s+c.total,0);
 
-  const thisMonth = new Date().toISOString().slice(0,7);
-  const thisMonthData = (monthlyChart || []).find(m=>m?.month===thisMonth)||{};
-  const prevMonth = (() => { const d=new Date(); d.setMonth(d.getMonth()-1); return d.toISOString().slice(0,7); })();
-  const prevMonthData = (monthlyChart || []).find(m=>m?.month===prevMonth)||{};
+  const thisMonth = getLatestTransactionMonthKey(analyticsTransactions);
+  const thisMonthData = analyticsMonthlyChart.find(m=>m?.month===thisMonth)||{};
+  const prevMonth = (() => {
+    const [year, month] = thisMonth.split("-").map(Number);
+    const d = new Date(year || new Date().getFullYear(), (month || 1) - 2, 1);
+    return d.toISOString().slice(0,7);
+  })();
+  const prevMonthData = analyticsMonthlyChart.find(m=>m?.month===prevMonth)||{};
   const thisSpend = thisMonthData.expense||0;
   const prevSpend = prevMonthData.expense||0;
   const spendChange = prevSpend>0 ? (((thisSpend-prevSpend)/prevSpend)*100).toFixed(1) : null;
 
-  const trendData = [...(monthlyChart || [])]
+  const trendData = [...analyticsMonthlyChart]
     .filter(m => m && m.month)
     .sort((a, b) => (a.month || "").localeCompare(b.month || ""))
     .slice(-6)
@@ -237,7 +385,7 @@ function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReache
       return { label, income: m.income || 0, expense: m.expense || 0, net: (m.income || 0) - (m.expense || 0) };
     });
 
-  const recentTx = sortTransactionsNewestFirst(apiTransactions).slice(0,5);
+  const recentTx = sortTransactionsNewestFirst(analyticsTransactions).slice(0,5);
 
   const fmtMoney = (n, options = { maximumFractionDigits: 0 }) => {
     const numeric = Number(n || 0);
@@ -267,6 +415,7 @@ function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReache
     ["transactions", isMobileLocal ? "Transactions" : "Transactions"],
     ["recurring",    isMobileLocal ? "Recurring": "Recurring"],
     ["reports",      "Reports"],
+    ["settings",     "Settings"],
   ];
 
   return (
@@ -469,12 +618,12 @@ function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReache
           navigate={navigate}
           thisSpend={thisSpend}
           thisMonthData={thisMonthData}
-          apiTransactions={apiTransactions}
+          apiTransactions={analyticsTransactions}
           recentTx={recentTx}
           fmtMoney={fmtMoney}
           preferredCurrency={preferredCurrency}
           budget={budget}
-          monthlyChart={monthlyChart}
+          monthlyChart={analyticsMonthlyChart}
           openAdd={openAdd}
           onBudgetSaved={onBudgetSaved}
         />
@@ -484,6 +633,7 @@ function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReache
           transactionService={transactionService}
           queryClient={queryClient}
           C={C}
+          apiTransactions={apiTransactions}
           isPro={isPro}
           txLimitReached={txLimitReached}
           navigate={navigate}
@@ -491,13 +641,14 @@ function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReache
           setAddModalOpen={()=>openAdd()}
           pushNotif={pushNotif}
           hideHeader
+          spendingSettings={resolvedSettings}
         />
       )}
       {spendTab==="breakdown" && (
         <SpendingBreakdownTab
           C={C}
-          apiTransactions={apiTransactions}
-          monthlyChart={monthlyChart}
+          apiTransactions={analyticsTransactions}
+          monthlyChart={analyticsMonthlyChart}
           budget={budget}
           onBudgetSaved={onBudgetSaved}
           isMobile={isMobileLocal || isMobile}
@@ -508,11 +659,11 @@ function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReache
       {spendTab==="reports" && (
         <SpendingReportsTab
           C={C}
-          apiTransactions={apiTransactions}
-          monthlyChart={monthlyChart}
+          apiTransactions={analyticsTransactions}
           isMobile={isMobileLocal || isMobile}
           preferredCurrency={preferredCurrency}
           setSpendTab={setSpendTab}
+          reportPreferences={resolvedSettings.reportPreferences}
         />
       )}
       {spendTab==="recurring" && (
@@ -526,31 +677,25 @@ function SpendingPage({ transactionService, queryClient, C, isPro, txLimitReache
           refreshUser={refreshUser}
           txLimitReached={txLimitReached}
           preferredCurrency={preferredCurrency}
+          spendingSettings={resolvedSettings}
         />
       )}
       {spendTab==="settings" && (
-        <div style={{ padding: "60px 20px", textAlign: "center", animation: "fadeUp 0.3s ease" }}>
-          <div style={{ width: 64, height: 64, borderRadius: 20, background: "var(--surface-muted)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px", color: "var(--text-muted)" }}>
-            <Settings size={32} />
-          </div>
-          <h2 style={{ fontSize: 24, fontWeight: 700, color: "var(--text-primary)", marginBottom: 12 }}>Spending Settings</h2>
-          <p style={{ fontSize: 15, color: "var(--text-muted)", maxWidth: 400, margin: "0 auto 32px", lineHeight: 1.6 }}>
-            Customize your budget thresholds, manage spending categories, and configure alert preferences. This section is currently being refined.
-          </p>
-          <button 
-            type="button" 
-            onClick={() => setSpendTab("overview")} 
-            style={{ 
-              padding: "12px 24px", borderRadius: 12, border: `1px solid ${C.border}`, 
-              background: "var(--bg-card)", color: "var(--text-primary)", 
-              fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.15s" 
-            }}
-            onMouseEnter={e => e.currentTarget.style.background = "var(--surface-muted)"}
-            onMouseLeave={e => e.currentTarget.style.background = "var(--bg-card)"}
-          >
-            Back to Overview
-          </button>
-        </div>
+        <SpendingSettingsTab
+          C={C}
+          isMobile={isMobileLocal || isMobile}
+          preferredCurrency={preferredCurrency}
+          spendingSettings={resolvedSettings}
+          budget={budget}
+          apiTransactions={analyticsTransactions}
+          monthlyChart={analyticsMonthlyChart}
+          transactionService={transactionService}
+          queryClient={queryClient}
+          refreshUser={refreshUser}
+          pushNotif={pushNotif}
+          onBudgetSaved={onBudgetSaved}
+          setSpendTab={setSpendTab}
+        />
       )}
     </div>
   );

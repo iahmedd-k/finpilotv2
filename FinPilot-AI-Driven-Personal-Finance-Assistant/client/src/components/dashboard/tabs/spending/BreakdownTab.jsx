@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, ChevronDown, ArrowDownRight, ArrowUpRight, X, BadgeDollarSign, Plus, Sparkles } from "lucide-react";
+import { ChevronRight, ChevronDown, ArrowDownRight, ArrowUpRight, X, BadgeDollarSign, Plus, Settings2 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from "recharts";
 import api from "../../../../services/api";
 import { dedupToast, getSpendingCategoryMeta, SPENDING_CATEGORY_META } from "../../dashboardShared.jsx";
@@ -9,12 +9,19 @@ import { formatCurrencyAmount, getUserCurrency } from "../../../../utils/currenc
 function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {}, onBudgetSaved, isMobile, preferredCurrency: preferredCurrencyProp, setSpendTab }) {
   const { user } = useAuthContext();
   const preferredCurrency = preferredCurrencyProp || getUserCurrency(user);
-  const now          = new Date();
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  const latestTransactionDate = useMemo(() => {
+    const timestamps = (apiTransactions || [])
+      .map((tx) => new Date(tx?.date).getTime())
+      .filter((value) => Number.isFinite(value));
+    return timestamps.length ? new Date(Math.max(...timestamps)) : new Date();
+  }, [apiTransactions]);
+  const currentMonth = `${latestTransactionDate.getFullYear()}-${String(latestTransactionDate.getMonth()+1).padStart(2,"0")}`;
   const [selectedMonth, setSelectedMonth] = useState(currentMonth);
   const [budgetModalOpen, setBudgetModalOpen] = useState(false);
   const [budgetInput, setBudgetInput]         = useState("");
   const [budgetSaving, setBudgetSaving]       = useState(false);
+  const [monthBudget, setMonthBudget]         = useState(budget || null);
+  const [budgetLoading, setBudgetLoading]     = useState(false);
   const [breakdownTab, setBreakdownTab]       = useState("expenses");
   const [timePeriod, setTimePeriod]           = useState("Monthly");
   const [periodDropOpen, setPeriodDropOpen]   = useState(false);
@@ -23,8 +30,14 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
   const [selectedCategoryId, setSelectedCategoryId] = useState(null);
   const timelineRef       = useRef(null);
   const currentMonthBtnRef = useRef(null);
+  const prevDefaultMonthRef = useRef(currentMonth);
   // Touch tooltip: tap-to-toggle on mobile
   const [tooltip, setTooltip] = useState(null);
+
+  useEffect(() => {
+    setSelectedMonth((prev) => (prev === prevDefaultMonthRef.current ? currentMonth : prev));
+    prevDefaultMonthRef.current = currentMonth;
+  }, [currentMonth]);
 
   useEffect(() => {
     if (timelineRef.current && currentMonthBtnRef.current) {
@@ -37,6 +50,45 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
   useEffect(() => {
     if (breakdownTab === "income") setSelectedCategoryId(null);
   }, [breakdownTab]);
+
+  useEffect(() => {
+    if (breakdownTab === "budget" && timePeriod !== "Monthly") {
+      setTimePeriod("Monthly");
+    }
+    if (breakdownTab === "budget" && viewBy !== "Category") {
+      setViewBy("Category");
+    }
+  }, [breakdownTab, timePeriod, viewBy]);
+
+  useEffect(() => {
+    setShowAllCats(false);
+    setSelectedCategoryId(null);
+  }, [selectedMonth, timePeriod, breakdownTab, viewBy]);
+
+  useEffect(() => {
+    let ignore = false;
+    const loadBudget = async () => {
+      if (timePeriod !== "Monthly") {
+        setMonthBudget(null);
+        return;
+      }
+      if (selectedMonth === currentMonth) {
+        setMonthBudget(budget || null);
+        return;
+      }
+      try {
+        setBudgetLoading(true);
+        const response = await api.get("/dashboard/budget", { params: { month: selectedMonth } });
+        if (!ignore) setMonthBudget(response?.data?.budget || null);
+      } catch {
+        if (!ignore) setMonthBudget(null);
+      } finally {
+        if (!ignore) setBudgetLoading(false);
+      }
+    };
+    loadBudget();
+    return () => { ignore = true; };
+  }, [budget, currentMonth, selectedMonth, timePeriod]);
 
   const allMonths = useMemo(() => {
     const fromChart = monthlyChart.map(m => m.month);
@@ -114,7 +166,7 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
   const totalIncome = monthTx.filter(t=>t.type==="income").reduce((s,t)=>s+Math.abs(t.amount||0), 0);
   const netCashFlow = totalIncome - totalSpent;
   const isCurrentMonth = selectedMonth === currentMonth;
-  const budgetAmt   = isCurrentMonth ? (budget?.amount || 0) : 0;
+  const budgetAmt   = timePeriod === "Monthly" ? (monthBudget?.amount || 0) : 0;
   const budgetPct   = budgetAmt > 0 ? Math.min((totalSpent/budgetAmt)*100, 100) : 0;
   const overBudget  = budgetAmt > 0 && totalSpent > budgetAmt;
   const selectedCategoryMeta = selectedCategoryId ? getSpendingCategoryMeta(selectedCategoryId) : null;
@@ -147,6 +199,12 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
     const [y,mo] = m.split("-").map(Number);
     return new Date(y,mo-1,1).toLocaleDateString("en-US",{month:"short",year:"numeric"});
   };
+  const selectedPeriodLabel = useMemo(() => {
+    const [y, mo] = selectedMonth.split("-").map(Number);
+    if (timePeriod === "Yearly") return String(y);
+    if (timePeriod === "Quarterly") return `Q${Math.ceil(mo / 3)} ${y}`;
+    return fmtMonth(selectedMonth);
+  }, [selectedMonth, timePeriod]);
 
   const activeRows = useMemo(() => {
     if (viewBy === "Merchant") {
@@ -159,13 +217,14 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
     }
     
     if (breakdownTab === "income") return Object.entries(incomeCatTotals).sort((a, b) => b[1] - a[1]);
-    return SPENDING_CATEGORY_META.map((meta) => [meta.id, catTotals[meta.id] || 0]);
+    return SPENDING_CATEGORY_META
+      .map((meta) => ({ ...meta, amount: catTotals[meta.id] || 0 }))
+      .filter((meta) => meta.amount > 0)
+      .sort((a, b) => b.amount - a.amount);
   }, [breakdownTab, viewBy, incomeCatTotals, catTotals, monthTx]);
 
   const activeTotal = breakdownTab === "income" ? totalIncome : totalSpent;
-  const displayRows = breakdownTab === "income"
-    ? (showAllCats ? activeRows : activeRows.slice(0, 5))
-    : SPENDING_CATEGORY_META;
+  const displayRows = showAllCats ? activeRows : activeRows.slice(0, 6);
   const selectedCategoryTransactions = useMemo(() => {
     if (!selectedCategoryId) return [];
     return monthTx
@@ -179,7 +238,7 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
 
   const donutData = breakdownTab === "income"
     ? activeRows.slice(0, 8)
-    : SPENDING_CATEGORY_META.map((meta) => [meta.id, catTotals[meta.id] || 0]).filter(([, amt]) => amt > 0).slice(0, 8);
+    : activeRows.slice(0, 8).map((meta) => [meta.id, meta.amount]);
   const R = 90, cx = 110, cy = 110, stroke = 10;
   const circ = 2 * Math.PI * R;
 
@@ -195,7 +254,8 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
     if(!amount||isNaN(amount)||amount<=0) return;
     setBudgetSaving(true);
     try {
-      await api.post("/dashboard/budget",{ month: currentMonth, amount });
+      await api.post("/dashboard/budget",{ month: selectedMonth, amount });
+      setMonthBudget({ month: selectedMonth, amount });
       onBudgetSaved?.();
       setBudgetModalOpen(false);
       setBudgetInput("");
@@ -316,15 +376,16 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
                   <button type="button" onClick={() => setSelectedMonth(m)}
                     style={{
                       flexShrink:0,
-                      padding:`0 ${isMobile?8:12}px 10px`,
-                      paddingTop:8,
-                      background: isSelected ? "#f0fdf9" : "transparent",
+                      padding:`8px ${isMobile?8:10}px 10px`,
+                      background: isSelected ? "var(--surface-muted)" : "transparent",
                       border:"none", cursor:"pointer", fontFamily:"inherit",
                       display:"flex", flexDirection:"column", alignItems:"center", gap:0,
                       position:"relative",
-                      borderRadius: isSelected ? "8px 8px 0 0" : 0,
+                      borderRadius: 12,
                       transition:"background 0.15s",
                       minWidth: colW,
+                      height: isMobile ? 74 : 78,
+                      justifyContent: "flex-end",
                     }}>
                     <div style={{ height: BAR_MAX_H + 4, display:"flex", alignItems:"flex-end", justifyContent:"center", gap:2, marginBottom:5 }}>
                       {hasData ? (
@@ -339,7 +400,7 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
                     <span style={{ fontSize:isMobile?10:11, fontWeight:isSelected?700:400, color:isSelected?C.teal:C.muted, whiteSpace:"nowrap" }}>
                       {fmtMonthShort(m)}
                     </span>
-                    {isSelected && <div style={{ position:"absolute", bottom:0, left:0, right:0, height:2, background:C.teal, borderRadius:"2px 2px 0 0" }}/>}
+                    {isSelected && <div style={{ position:"absolute", bottom:0, left:10, right:10, height:2, background:C.teal, borderRadius:99 }}/>}
                   </button>
                 </div>
               );
@@ -449,34 +510,51 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
 
       {/* ── TIME PERIOD + TIMELINE ── */}
       <div style={{ background:C.white, border:`1px solid ${C.border}`, borderRadius:16, padding:`${isMobile?12:16}px 0 0`, marginBottom:14, position:"relative", overflow:"visible" }}>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, padding:`0 ${isMobile?14:20}px` }}>
-          <div style={{ fontSize:9, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.10em" }}>Time Period</div>
-          <div className="period-drop" style={{ position:"relative", zIndex:200 }}>
-            <button type="button" onClick={()=>setPeriodDropOpen(v=>!v)}
-              style={{ display:"flex", alignItems:"center", gap:5, padding:"5px 10px", borderRadius:8, border:`1px solid ${C.border}`, background:C.white, fontSize:12, fontWeight:600, color:C.text, cursor:"pointer", fontFamily:"inherit" }}>
-              {timePeriod} <ChevronDown size={12}/>
-            </button>
-            {periodDropOpen && (
-              <div style={{ position:"absolute", right:0, top:"calc(100% + 4px)", background:C.white, border:`1px solid ${C.border}`, borderRadius:10, boxShadow:"0 12px 32px rgba(0,0,0,0.14)", zIndex:300, minWidth:130 }}>
-                {["Weekly","Monthly","Quarterly","Yearly"].map(p=>(
-                  <button key={p} type="button"
-                    onClick={()=>{ setTimePeriod(p); setPeriodDropOpen(false); setSelectedMonth(currentMonth); }}
-                    style={{ display:"block", width:"100%", textAlign:"left", padding:"9px 16px", background:timePeriod===p?C.bg:"transparent", border:"none", fontSize:13, fontWeight:timePeriod===p?700:400, color:C.text, cursor:"pointer", fontFamily:"inherit" }}>
-                    {p}
-                  </button>
-                ))}
-              </div>
-            )}
+        <div style={{ display:"flex", alignItems:isMobile?"stretch":"flex-start", justifyContent:"space-between", gap:12, marginBottom:12, padding:`0 ${isMobile?14:20}px`, flexDirection:isMobile?"column":"row" }}>
+          <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+            <div style={{ fontSize:9, fontWeight:700, color:C.muted, textTransform:"uppercase", letterSpacing:"0.10em" }}>Breakdown Period</div>
+            <div style={{ fontSize:14, fontWeight:700, color:C.text }}>{selectedPeriodLabel}</div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <div style={{ position: "relative" }}>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap", justifyContent:isMobile?"flex-start":"flex-end", alignItems:"center" }}>
+            <div className="period-drop" style={{ position:"relative", zIndex:200 }}>
+              <button type="button" onClick={()=>setPeriodDropOpen(v=>!v)}
+                style={{ display:"flex", alignItems:"center", gap:5, height:36, padding:"0 12px", borderRadius:10, border:`1px solid ${C.border}`, background:C.white, fontSize:12.5, fontWeight:600, color:C.text, cursor:"pointer", fontFamily:"inherit", appearance:"none", outline:"none", WebkitTapHighlightColor:"transparent" }}>
+                {timePeriod} <ChevronDown size={12}/>
+              </button>
+              {periodDropOpen && (
+                <div style={{ position:"absolute", right:0, top:"calc(100% + 6px)", background:C.white, border:`1px solid ${C.border}`, borderRadius:10, boxShadow:"0 12px 32px rgba(0,0,0,0.14)", zIndex:300, minWidth:130 }}>
+                  {["Monthly","Quarterly","Yearly"].map(p=>(
+                    <button key={p} type="button"
+                      onClick={()=>{ setTimePeriod(p); setPeriodDropOpen(false); if (p !== "Monthly" && breakdownTab === "budget") setBreakdownTab("expenses"); }}
+                      style={{ display:"block", width:"100%", textAlign:"left", padding:"9px 16px", background:timePeriod===p?C.bg:"transparent", border:"none", fontSize:13, fontWeight:timePeriod===p?700:400, color:C.text, cursor:"pointer", fontFamily:"inherit" }}>
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {breakdownTab !== "budget" && (
               <button type="button" onClick={() => setViewBy(v => v === "Category" ? "Merchant" : "Category")}
-                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.white, fontSize: 12, color: C.text, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>
+                style={{ display: "flex", alignItems: "center", gap: 5, height: 36, padding: "0 12px", border: `1px solid ${C.border}`, borderRadius: 10, background: C.white, fontSize: 12.5, color: C.text, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>
                 View by <span style={{ color: C.teal }}>{viewBy}</span>
               </button>
-            </div>
-            <button type="button" onClick={() => setSpendTab?.("settings")} style={{ border: `1px solid ${C.border}`, background: C.white, color: C.text, borderRadius: 8, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Manage Categories</button>
-            <button type="button" onClick={() => dedupToast.info("Settings coming soon")} style={{ width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.muted }}><Sparkles size={13} /></button>
+            )}
+            {timePeriod === "Monthly" && (
+              <button type="button" onClick={() => { setBudgetInput(monthBudget?.amount?.toString() || ""); setBudgetModalOpen(true); }}
+                style={{ display:"flex", alignItems:"center", gap:6, height:36, border:`1px solid ${C.border}`, background:C.white, color:C.text, borderRadius:10, padding:"0 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>
+                <BadgeDollarSign size={14} />
+                {monthBudget?.amount ? "Edit Budget" : "Set Budget"}
+              </button>
+            )}
+            <button type="button" onClick={() => setSpendTab?.("settings")} style={{ display:"flex", alignItems:"center", gap:6, height:36, border: `1px solid ${C.border}`, background: C.white, color: C.text, borderRadius: 10, padding: "0 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+              <Settings2 size={14} />
+              Manage Categories
+            </button>
+            {selectedMonth !== currentMonth && (
+              <button type="button" onClick={() => setSelectedMonth(currentMonth)} style={{ height:36, border: `1px solid ${C.border}`, background: "var(--surface-muted)", color: C.text, borderRadius: 10, padding: "0 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                Current Month
+              </button>
+            )}
           </div>
         </div>
         {Timeline}
@@ -506,6 +584,7 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
                   <div style={{ textAlign:"center", marginBottom:20 }}>
                     <div style={{ fontSize:11, fontWeight:600, color:C.muted, textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:6 }}>Budget for {fmtMonth(selectedMonth)}</div>
                     <div style={{ fontSize:26, fontWeight:800, color:C.text, letterSpacing:"-0.4px" }}>{fmt(budgetAmt)}</div>
+                    {budgetLoading && <div style={{ marginTop: 6, fontSize: 11.5, color: C.muted }}>Loading budget…</div>}
                   </div>
                   <div style={{ display:"flex", justifyContent:"center", marginBottom:16 }}>
                     <svg width={isMobile?180:220} height={isMobile?180:220} viewBox="0 0 220 220">
@@ -540,23 +619,19 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
                       Over budget by {fmt(totalSpent - budgetAmt)}
                     </div>
                   )}
-                  {isCurrentMonth && (
-                    <button type="button" onClick={()=>{ setBudgetInput(budgetAmt?.toString()||""); setBudgetModalOpen(true); }}
-                      style={{ width:"100%", padding:"10px 0", borderRadius:10, border:`1px solid ${C.border}`, background:"transparent", color:C.text, fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>
-                      Edit Budget
-                    </button>
-                  )}
+                  <button type="button" onClick={()=>{ setBudgetInput(budgetAmt?.toString()||""); setBudgetModalOpen(true); }}
+                    style={{ width:"100%", padding:"10px 0", borderRadius:10, border:`1px solid ${C.border}`, background:"transparent", color:C.text, fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>
+                    Edit Budget
+                  </button>
                 </>
               ) : (
                 <div style={{ textAlign:"center", padding:"40px 0" }}>
                   <div style={{ fontSize:14, fontWeight:700, color:C.text, marginBottom:6 }}>No budget set</div>
-                  <div style={{ fontSize:12, color:C.muted, marginBottom:20 }}>Set a monthly budget to track your spending against a goal.</div>
-                  {isCurrentMonth && (
-                    <button type="button" onClick={()=>{ setBudgetInput(""); setBudgetModalOpen(true); }}
-                      style={{ padding:"10px 24px", borderRadius:10, border:"none", background:C.strong, color:C.onStrong, fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>
-                      Set Budget
-                    </button>
-                  )}
+                  <div style={{ fontSize:12, color:C.muted, marginBottom:20 }}>Set a monthly budget for {fmtMonth(selectedMonth)} to track your spending against a goal.</div>
+                  <button type="button" onClick={()=>{ setBudgetInput(""); setBudgetModalOpen(true); }}
+                    style={{ padding:"10px 24px", borderRadius:10, border:"none", background:C.strong, color:C.onStrong, fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>
+                    Set Budget
+                  </button>
                 </div>
               )}
               <div style={{ marginTop: 18, borderTop: `1px solid ${C.border2}`, paddingTop: 16 }}>
@@ -631,7 +706,7 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
                     <div style={{ fontSize:10, fontWeight:600, color:C.muted, letterSpacing:"0.04em", marginRight:44 }}>AMOUNT</div>
                   </div>
                   {CategoryRows}
-                  {breakdownTab === "income" && activeRows.length > 5 && (
+                  {activeRows.length > 6 && (
                     <div style={{ borderTop:`1px solid ${C.border2}`, padding:"12px 0", textAlign:"center" }}>
                       <button type="button" onClick={()=>setShowAllCats(v=>!v)}
                         style={{ background:"none", border:"none", fontSize:12, fontWeight:600, color:C.teal, cursor:"pointer", fontFamily:"inherit" }}>
@@ -658,7 +733,7 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
                     </thead>
                     <tbody>{CategoryRows}</tbody>
                   </table>
-                  {breakdownTab === "income" && activeRows.length > 5 && (
+                  {activeRows.length > 6 && (
                     <div style={{ borderTop:`1px solid ${C.border2}`, padding:"12px 0", textAlign:"center" }}>
                       <button type="button" onClick={()=>setShowAllCats(v=>!v)}
                         style={{ background:"none", border:"none", fontSize:12, fontWeight:600, color:C.teal, cursor:"pointer", fontFamily:"inherit" }}>
@@ -898,11 +973,11 @@ function BreakdownTab({ C, apiTransactions = [], monthlyChart = [], budget = {},
             onClick={e=>e.stopPropagation()}>
             <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18 }}>
               <div>
-                <div style={{ fontSize:17,fontWeight:700,color:C.text }}>{budgetAmt>0?"Edit Budget":"Set Monthly Budget"}</div>
-                <div style={{ fontSize:11.5,color:C.muted,marginTop:2 }}>
-                  {now.toLocaleDateString("en-US",{month:"long"})} {now.getFullYear()}
-                </div>
-              </div>
+            <div style={{ fontSize:17,fontWeight:700,color:C.text }}>{budgetAmt>0?"Edit Budget":"Set Monthly Budget"}</div>
+            <div style={{ fontSize:11.5,color:C.muted,marginTop:2 }}>
+              {new Date(`${selectedMonth}-01`).toLocaleDateString("en-US",{month:"long", year:"numeric"})}
+            </div>
+          </div>
               <button type="button" onClick={()=>setBudgetModalOpen(false)} style={{ background:"none",border:"none",cursor:"pointer",color:C.muted }}><X size={18}/></button>
             </div>
             <div style={{ marginBottom:18 }}>

@@ -89,20 +89,22 @@ function ProgressBar({ value, max, color = "#3b82f6" }) {
   );
 }
 
-export default function RecurringTab({ C, apiTransactions = [], openAdd, transactionService, queryClient, pushNotif, refreshUser, txLimitReached, preferredCurrency: preferredCurrencyProp }) {
+export default function RecurringTab({ C, apiTransactions = [], openAdd, transactionService, queryClient, pushNotif, refreshUser, txLimitReached, preferredCurrency: preferredCurrencyProp, spendingSettings }) {
   const { user } = useAuthContext();
   const preferredCurrency = preferredCurrencyProp || getUserCurrency(user);
+  const recurringSettings = spendingSettings?.recurringSettings || {};
   
   const [viewMonth, setViewMonth] = useState(new Date());
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" ? window.innerWidth < 1024 : false);
   const [categoryOpen, setCategoryOpen] = useState(false);
+  const [showInferred, setShowInferred] = useState(recurringSettings.showInferredRecurring !== false);
   const categoryRef = useRef(null);
 
   const emptyForm = {
     merchant: "",
-    category: "Subscriptions",
+    category: recurringSettings.defaultExpenseCategory || "Subscriptions",
     amount: "",
     type: "expense",
     frequency: "monthly",
@@ -138,7 +140,9 @@ export default function RecurringTab({ C, apiTransactions = [], openAdd, transac
       })
       .map((group) => ({ ...group[0], inferredRecurring: true }));
 
-    const merged = [...explicit, ...inferred].reduce((map, tx) => {
+    const sourceItems = recurringSettings.autoDetectRecurring === false ? explicit : [...explicit, ...(showInferred === false ? [] : inferred)];
+
+    const merged = sourceItems.reduce((map, tx) => {
       const merchant = tx.merchant || tx.category || "Transaction";
       const key = `${tx.type}:${merchant}:${tx.category || "Other"}`;
       if (!map.has(key) || new Date(tx.date) > new Date(map.get(key).date)) {
@@ -152,7 +156,7 @@ export default function RecurringTab({ C, apiTransactions = [], openAdd, transac
       displayName: tx.merchant || tx.category || "Recurring item",
       recurringFrequency: parseRecurringFrequency(tx.notes)
     }));
-  }, [apiTransactions]);
+  }, [apiTransactions, recurringSettings.autoDetectRecurring, showInferred]);
 
   const monthData = useMemo(() => {
     const start = new Date(viewMonth.getFullYear(), viewMonth.getMonth(), 1);
@@ -243,6 +247,7 @@ export default function RecurringTab({ C, apiTransactions = [], openAdd, transac
         date: form.startDate,
         notes,
         isRecurring: true,
+        reviewStatus: spendingSettings?.transactionPreferences?.defaultReviewStatus || "needs_review",
       });
       queryClient?.invalidateQueries({ queryKey: ["transactions"] });
       queryClient?.invalidateQueries({ queryKey: ["transactions-page"] });
@@ -277,7 +282,12 @@ export default function RecurringTab({ C, apiTransactions = [], openAdd, transac
               <div style={{ fontSize: 18, fontWeight: 600, color: C.text, fontFamily: "'Inter', sans-serif" }}>
                 Upcoming this {viewMonth.getMonth() === new Date().getMonth() && viewMonth.getFullYear() === new Date().getFullYear() ? "month" : viewMonth.toLocaleDateString('en-US', { month: 'long' })}
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {recurringSettings.autoDetectRecurring !== false && (
+                  <button type="button" onClick={() => setShowInferred(!showInferred)} style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${C.border}`, background: showInferred ? C.text : C.white, color: showInferred ? C.white : C.text, fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", textTransform: "uppercase", letterSpacing: "0.05em", appearance: "none", outline: "none", WebkitTapHighlightColor: "transparent" }}>
+                    {showInferred ? "Hide inferred" : "Show inferred"}
+                  </button>
+                )}
                 <button onClick={() => changeMonth(-1)} style={{ width: 36, height: 36, borderRadius: 12, border: `1px solid ${C.border}`, background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: C.text }}>
                   <ChevronLeft size={18} />
                 </button>
@@ -351,7 +361,7 @@ export default function RecurringTab({ C, apiTransactions = [], openAdd, transac
               <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.6, margin: 0 }}>
                 {recurringItems.length === 0 
                   ? "It appears you have no recurring transactions scheduled for this month. Consider adding any regular payments or incomes to help track your finances."
-                  : `You have ${monthData.occurrences.length} recurring items this month. Total projected expenses are ${fmtMoney(monthData.expenseTotal, preferredCurrency)}, with ${fmtMoney(monthData.incomeTotal, preferredCurrency)} in expected income.`
+                  : `You have ${monthData.occurrences.length} recurring items this month. Total projected expenses are ${fmtMoney(monthData.expenseTotal, preferredCurrency)}, with ${fmtMoney(monthData.incomeTotal, preferredCurrency)} in expected income. Reminders are set ${Number(recurringSettings.reminderDaysBefore ?? 3)} day(s) before due dates.`
                 }
               </p>
             </div>
@@ -476,19 +486,6 @@ export default function RecurringTab({ C, apiTransactions = [], openAdd, transac
                 <LinkIcon size={24} />
               </div>
               <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>No credit card bills found in your accounts</p>
-              <button style={{ 
-                width: "100%", 
-                padding: "10px 0", 
-                borderRadius: 12, 
-                border: `1px solid ${C.border}`, 
-                background: "transparent", 
-                color: C.text, 
-                fontSize: 12.5, 
-                fontWeight: 600, 
-                cursor: "pointer"
-              }}>
-                Connect more accounts
-              </button>
             </div>
           </div>
 
@@ -527,7 +524,7 @@ export default function RecurringTab({ C, apiTransactions = [], openAdd, transac
                     {["expense", "income"].map((type) => {
                       const active = form.type === type;
                       return (
-                        <button key={type} type="button" onClick={() => setForm((prev) => ({ ...prev, type, category: type === "income" ? "Salary" : "Subscriptions" }))} style={{ flex: 1, border: "none", borderRadius: 9, padding: "8px 0", background: active ? C.white : "transparent", color: active ? C.text : C.muted, fontSize: 12.5, fontWeight: active ? 700 : 600, cursor: "pointer", fontFamily: "inherit", boxShadow: active ? "0 1px 4px rgba(0,0,0,0.08)" : "none" }}>
+                        <button key={type} type="button" onClick={() => setForm((prev) => ({ ...prev, type, category: type === "income" ? (recurringSettings.defaultIncomeCategory || "Salary") : (recurringSettings.defaultExpenseCategory || "Subscriptions") }))} style={{ flex: 1, border: "none", borderRadius: 9, padding: "8px 0", background: active ? C.white : "transparent", color: active ? C.text : C.muted, fontSize: 12.5, fontWeight: active ? 700 : 600, cursor: "pointer", fontFamily: "inherit", boxShadow: active ? "0 1px 4px rgba(0,0,0,0.08)" : "none" }}>
                           {type === "expense" ? "Expense" : "Income"}
                         </button>
                       );

@@ -235,6 +235,7 @@ export default function AccountsTab({ pushNotif }) {
   });
 
   const [assetModalOpen, setAssetModalOpen] = useState(false);
+  const [assetModalTab, setAssetModalTab] = useState("manual"); // "manual" or "import"
   const [assetSaving, setAssetSaving] = useState(false);
   const [assetMsg, setAssetMsg] = useState(null);
   const [assetSearch, setAssetSearch] = useState("");
@@ -254,6 +255,7 @@ export default function AccountsTab({ pushNotif }) {
 
   const openModal = (typeOverride = "cash") => {
     setAssetMsg(null);
+    setAssetModalTab("manual");
     setAssetForm({ assetType: typeOverride, coin: "", symbol: "", quantity: "", buyPrice: "", buyDate: "", name: "", buyingPrice: "", currentValue: "", notes: "" });
     setAssetModalOpen(true);
   };
@@ -478,8 +480,8 @@ export default function AccountsTab({ pushNotif }) {
                 <div style={{ padding: "16px 20px", borderTop: `1px solid ${BORDER}` }}>
                   <button
                     type="button"
-                    onClick={() => openModal("cash")}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%", gap: 8, background: "transparent", border: `2px dashed ${BORDER}`, borderRadius: 12, cursor: "pointer", padding: "14px", fontFamily: "inherit", fontSize: 13, fontWeight: 600, color: MUTED, transition: "all 0.2s" }}
+                    onClick={() => { setAssetModalTab("manual"); openModal("cash"); }}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%", gap: 8, background: "transparent", border: `2px dashed ${BORDER}`, borderRadius: 12, cursor: "pointer", padding: "14px", fontFamily: "inherit", fontSize: 13, fontWeight: 600, color: MUTED, transition: "all 0.2s", appearance: "none", outline: "none", WebkitTapHighlightColor: "transparent" }}
                     onMouseEnter={e => { e.currentTarget.style.borderColor = SUB; e.currentTarget.style.color = TEXT; }}
                     onMouseLeave={e => { e.currentTarget.style.borderColor = BORDER; e.currentTarget.style.color = MUTED; }}
                   >
@@ -496,9 +498,8 @@ export default function AccountsTab({ pushNotif }) {
           <div style={{ background: WHITE, border: `1px solid ${BORDER}`, borderRadius: 16, overflow: "hidden", display: "flex", flexDirection: "column", height: "100%" }}>
             <div style={{ padding: "16px 20px", borderBottom: `1px solid ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <span style={{ fontSize: 10, fontWeight: 700, color: MUTED, textTransform: "uppercase", letterSpacing: "0.13em" }}>Add Assets</span>
-              <input type="file" accept=".csv" ref={fileInputRef} style={{ display: 'none' }} onChange={handleCsvImport} />
-              <button type="button" disabled={assetSaving} onClick={() => fileInputRef.current?.click()} style={{ border: `1px solid ${BORDER}`, background: "transparent", borderRadius: 8, padding: "4px 10px", fontSize: 11, fontWeight: 600, color: TEXT, cursor: assetSaving ? "not-allowed" : "pointer", opacity: assetSaving ? 0.5 : 1 }}>
-                {assetSaving ? "Importing..." : "Import CSV"}
+              <button type="button" onClick={() => { setAssetModalTab("import"); setAssetModalOpen(true); }} style={{ border: `1px solid ${BORDER}`, background: "transparent", borderRadius: 8, padding: "4px 10px", fontSize: 11, fontWeight: 600, color: TEXT, cursor: "pointer", appearance: "none", outline: "none", WebkitTapHighlightColor: "transparent", transition: "all 0.2s" }} onMouseEnter={e => { e.currentTarget.style.background = "var(--surface-muted)"; }} onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
+                Import CSV
               </button>
             </div>
 
@@ -590,6 +591,18 @@ export default function AccountsTab({ pushNotif }) {
                 </button>
               </div>
 
+              {/* Modal tabs */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 20, borderBottom: `1px solid ${BORDER}` }}>
+                <button type="button" onClick={() => setAssetModalTab("manual")} style={{ padding: "10px 12px", fontSize: 13, fontWeight: 600, color: assetModalTab === "manual" ? TEXT : MUTED, background: "none", border: "none", cursor: "pointer", borderBottom: assetModalTab === "manual" ? `2px solid ${TEXT}` : "none", transition: "all 0.2s" }}>
+                  Manual Entry
+                </button>
+                <button type="button" onClick={() => setAssetModalTab("import")} style={{ padding: "10px 12px", fontSize: 13, fontWeight: 600, color: assetModalTab === "import" ? TEXT : MUTED, background: "none", border: "none", cursor: "pointer", borderBottom: assetModalTab === "import" ? `2px solid ${TEXT}` : "none", transition: "all 0.2s" }}>
+                  Import CSV
+                </button>
+              </div>
+
+              {assetModalTab === "manual" ? (
+              <>
               {/* Asset type selector */}
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 11, color: MUTED, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 }}>Asset Type</div>
@@ -648,9 +661,24 @@ export default function AccountsTab({ pushNotif }) {
 
               <div style={{ marginTop: 12 }}><div style={{ fontSize: 11, color: MUTED, marginBottom: 6 }}>Notes</div><input style={inputStyle} value={assetForm.notes} onChange={handleAssetChange("notes")} placeholder="Optional" /></div>
               <Notice msg={assetMsg} />
-              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+              </> ) : (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16, padding: "20px 0" }}>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 13, color: TEXT, marginBottom: 8, fontWeight: 500 }}>Upload CSV file</div>
+                  <div style={{ fontSize: 12, color: MUTED, marginBottom: 12 }}>Import multiple assets at once. CSV must contain: assetType, name, buyingPrice</div>
+                </div>
+                <input type="file" accept=".csv" ref={fileInputRef} style={{ display: 'none' }} onChange={handleCsvImport} />
+                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={assetSaving} style={{ width: "100%", border: `2px dashed ${BORDER}`, background: "transparent", borderRadius: 12, padding: "24px 16px", cursor: assetSaving ? "not-allowed" : "pointer", fontSize: 13, color: TEXT, fontWeight: 600, transition: "all 0.2s", opacity: assetSaving ? 0.5 : 1 }}>
+                  {assetSaving ? "Importing..." : "Click to select CSV file"}
+                </button>
+              </div>
+              )}
+              <Notice msg={assetMsg} />
+              <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
                 <button type="button" onClick={() => setAssetModalOpen(false)} style={{ flex: 1, borderRadius: 10, border: `1px solid ${BORDER}`, background: SURFACE_MUTED, color: SUB, padding: "11px 0", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-                <button type="button" onClick={saveAsset} disabled={assetSaving} style={{ flex: 1, borderRadius: 10, border: "none", background: SURFACE_STRONG, color: TEXT_ON_STRONG, padding: "11px 0", cursor: assetSaving ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 600 }}>{assetSaving ? "Saving..." : "Add Asset"}</button>
+                {assetModalTab === "manual" && (
+                  <button type="button" onClick={saveAsset} disabled={assetSaving} style={{ flex: 1, borderRadius: 10, border: "none", background: SURFACE_STRONG, color: TEXT_ON_STRONG, padding: "11px 0", cursor: assetSaving ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 600 }}>{assetSaving ? "Saving..." : "Add Asset"}</button>
+                )}
               </div>
             </div>
           </div>,

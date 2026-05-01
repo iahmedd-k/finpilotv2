@@ -7,6 +7,117 @@ const calculateForecast = require("../services/ai/forecastService");
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
+const DEFAULT_SPENDING_SETTINGS = {
+  budgetSettings: {
+    defaultMonthlyBudget: 0,
+    budgetWarning50: true,
+    budgetWarning80: true,
+    budgetWarning100: true,
+    carryForwardBudget: true,
+    resetPeriod: "monthly",
+  },
+  categorySettings: {
+    hiddenCategoryIds: [],
+  },
+  alertSettings: {
+    notificationsEnabled: true,
+    categorySpikeAlerts: true,
+    categorySpikePercent: 25,
+    largeTransactionAlerts: true,
+    largeTransactionAmount: 500,
+    recurringReminderAlerts: true,
+  },
+  recurringSettings: {
+    reminderDaysBefore: 3,
+    autoDetectRecurring: true,
+    showInferredRecurring: true,
+    defaultExpenseCategory: "Subscriptions",
+    defaultIncomeCategory: "Salary",
+  },
+  transactionPreferences: {
+    defaultReviewStatus: "needs_review",
+    includeHiddenInAnalytics: false,
+    includeRecurringInBudget: true,
+    defaultSortDirection: "desc",
+  },
+  reportPreferences: {
+    defaultRange: "last_6_months",
+    defaultTab: "cashflow",
+    defaultViewBy: "Category",
+  },
+};
+
+const toNonNegativeNumber = (value, fallback) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : fallback;
+};
+
+const toBoolean = (value, fallback) => {
+  if (typeof value === "boolean") return value;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return fallback;
+};
+
+const sanitizeStringList = (value = []) => (
+  Array.isArray(value)
+    ? [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))]
+    : []
+);
+
+const normalizeSpendingSettings = (input = {}) => {
+  const budgetSettings = input?.budgetSettings || {};
+  const categorySettings = input?.categorySettings || {};
+  const alertSettings = input?.alertSettings || {};
+  const recurringSettings = input?.recurringSettings || {};
+  const transactionPreferences = input?.transactionPreferences || {};
+  const reportPreferences = input?.reportPreferences || {};
+
+  return {
+    budgetSettings: {
+      defaultMonthlyBudget: toNonNegativeNumber(budgetSettings.defaultMonthlyBudget, DEFAULT_SPENDING_SETTINGS.budgetSettings.defaultMonthlyBudget),
+      budgetWarning50: toBoolean(budgetSettings.budgetWarning50, DEFAULT_SPENDING_SETTINGS.budgetSettings.budgetWarning50),
+      budgetWarning80: toBoolean(budgetSettings.budgetWarning80, DEFAULT_SPENDING_SETTINGS.budgetSettings.budgetWarning80),
+      budgetWarning100: toBoolean(budgetSettings.budgetWarning100, DEFAULT_SPENDING_SETTINGS.budgetSettings.budgetWarning100),
+      carryForwardBudget: toBoolean(budgetSettings.carryForwardBudget, DEFAULT_SPENDING_SETTINGS.budgetSettings.carryForwardBudget),
+      resetPeriod: "monthly",
+    },
+    categorySettings: {
+      hiddenCategoryIds: sanitizeStringList(categorySettings.hiddenCategoryIds),
+    },
+    alertSettings: {
+      notificationsEnabled: toBoolean(alertSettings.notificationsEnabled, DEFAULT_SPENDING_SETTINGS.alertSettings.notificationsEnabled),
+      categorySpikeAlerts: toBoolean(alertSettings.categorySpikeAlerts, DEFAULT_SPENDING_SETTINGS.alertSettings.categorySpikeAlerts),
+      categorySpikePercent: clamp(toNonNegativeNumber(alertSettings.categorySpikePercent, DEFAULT_SPENDING_SETTINGS.alertSettings.categorySpikePercent), 0, 500),
+      largeTransactionAlerts: toBoolean(alertSettings.largeTransactionAlerts, DEFAULT_SPENDING_SETTINGS.alertSettings.largeTransactionAlerts),
+      largeTransactionAmount: toNonNegativeNumber(alertSettings.largeTransactionAmount, DEFAULT_SPENDING_SETTINGS.alertSettings.largeTransactionAmount),
+      recurringReminderAlerts: toBoolean(alertSettings.recurringReminderAlerts, DEFAULT_SPENDING_SETTINGS.alertSettings.recurringReminderAlerts),
+    },
+    recurringSettings: {
+      reminderDaysBefore: clamp(toNonNegativeNumber(recurringSettings.reminderDaysBefore, DEFAULT_SPENDING_SETTINGS.recurringSettings.reminderDaysBefore), 0, 60),
+      autoDetectRecurring: toBoolean(recurringSettings.autoDetectRecurring, DEFAULT_SPENDING_SETTINGS.recurringSettings.autoDetectRecurring),
+      showInferredRecurring: toBoolean(recurringSettings.showInferredRecurring, DEFAULT_SPENDING_SETTINGS.recurringSettings.showInferredRecurring),
+      defaultExpenseCategory: String(recurringSettings.defaultExpenseCategory || DEFAULT_SPENDING_SETTINGS.recurringSettings.defaultExpenseCategory).trim() || DEFAULT_SPENDING_SETTINGS.recurringSettings.defaultExpenseCategory,
+      defaultIncomeCategory: String(recurringSettings.defaultIncomeCategory || DEFAULT_SPENDING_SETTINGS.recurringSettings.defaultIncomeCategory).trim() || DEFAULT_SPENDING_SETTINGS.recurringSettings.defaultIncomeCategory,
+    },
+    transactionPreferences: {
+      defaultReviewStatus: transactionPreferences.defaultReviewStatus === "reviewed" ? "reviewed" : DEFAULT_SPENDING_SETTINGS.transactionPreferences.defaultReviewStatus,
+      includeHiddenInAnalytics: toBoolean(transactionPreferences.includeHiddenInAnalytics, DEFAULT_SPENDING_SETTINGS.transactionPreferences.includeHiddenInAnalytics),
+      includeRecurringInBudget: toBoolean(transactionPreferences.includeRecurringInBudget, DEFAULT_SPENDING_SETTINGS.transactionPreferences.includeRecurringInBudget),
+      defaultSortDirection: transactionPreferences.defaultSortDirection === "asc" ? "asc" : "desc",
+    },
+    reportPreferences: {
+      defaultRange: ["last_30_days", "last_90_days", "last_6_months", "year_to_date", "all_time"].includes(reportPreferences.defaultRange)
+        ? reportPreferences.defaultRange
+        : DEFAULT_SPENDING_SETTINGS.reportPreferences.defaultRange,
+      defaultTab: ["cashflow", "expenses", "income"].includes(reportPreferences.defaultTab)
+        ? reportPreferences.defaultTab
+        : DEFAULT_SPENDING_SETTINGS.reportPreferences.defaultTab,
+      defaultViewBy: reportPreferences.defaultViewBy === "Merchant" ? "Merchant" : "Category",
+    },
+  };
+};
+
 // @GET /api/dashboard
 const getDashboard = async (req, res, next) => {
   try {
@@ -23,7 +134,7 @@ const getDashboard = async (req, res, next) => {
     const [allRecentTx, goals, user] = await Promise.all([
       Transaction.find({ userId, date: { $gte: last6Months } }).lean(),
       Goal.find({ userId, isCompleted: false }).lean(),
-      User.findById(userId).select("budgets").lean(),
+      User.findById(userId).select("budgets spendingSettings").lean(),
     ]);
 
     const currentMonthTx = allRecentTx.filter((t) => t.date >= startOfMonth && t.date <= endOfMonth);
@@ -114,6 +225,7 @@ const getDashboard = async (req, res, next) => {
         monthlyChart,
         forecast,
         budget,
+        spendingSettings: normalizeSpendingSettings(user?.spendingSettings),
         goals: goals.map((g) => ({
           _id: g._id,
           title: g.title,
@@ -125,6 +237,38 @@ const getDashboard = async (req, res, next) => {
           deadline: g.deadline,
         })),
       },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @GET /api/dashboard/spending-settings
+const getSpendingSettings = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user._id).select("spendingSettings").lean();
+    res.status(200).json({
+      success: true,
+      spendingSettings: normalizeSpendingSettings(user?.spendingSettings),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @POST /api/dashboard/spending-settings
+const saveSpendingSettings = async (req, res, next) => {
+  try {
+    const spendingSettings = normalizeSpendingSettings(req.body || {});
+    await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: { spendingSettings } },
+      { new: false, runValidators: true }
+    );
+
+    res.status(200).json({
+      success: true,
+      spendingSettings,
     });
   } catch (err) {
     next(err);
@@ -555,6 +699,8 @@ module.exports = {
   getForecast,
   setBudget,
   getBudget,
+  getSpendingSettings,
+  saveSpendingSettings,
   getForecastCustomizations,
   saveForecastCustomizations,
   resetForecastCustomizations,

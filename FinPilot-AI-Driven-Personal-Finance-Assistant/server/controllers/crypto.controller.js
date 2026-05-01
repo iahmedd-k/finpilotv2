@@ -6,6 +6,51 @@ const { getFxRate } = require("../services/currencyConversionService");
 const priceCache = { data: {}, timestamp: 0 };
 const CACHE_TTL  = 5 * 60 * 1000;
 const COINGECKO_PUBLIC_API_KEY = "CG-FUFY2SsHBq25vAzUrR36RtBY";
+const VALID_TYPES = ["crypto", "equity", "cash", "vehicle", "property", "private_equity", "insurance", "valuables", "pension", "debt", "other"];
+
+const hasValue = (value) => value !== undefined && value !== null && String(value).trim() !== "";
+const toNumber = (value) => Number(value);
+
+const buildEquityPayload = (body, fallback = {}) => {
+  const quantity = hasValue(body.quantity) ? toNumber(body.quantity) : (fallback.quantity ?? 0);
+  const buyPrice = hasValue(body.buyPrice) ? toNumber(body.buyPrice) : (fallback.buyPrice ?? 0);
+  const manualCurrentPrice = hasValue(body.currentPrice) ? toNumber(body.currentPrice) : undefined;
+  const manualCurrentValue = hasValue(body.currentValue) ? toNumber(body.currentValue) : undefined;
+  const buyingPrice = quantity * buyPrice;
+  const currentValue = manualCurrentValue ?? (manualCurrentPrice !== undefined ? manualCurrentPrice * quantity : (fallback.currentValue ?? buyingPrice));
+  const currentPrice = manualCurrentPrice ?? (quantity > 0 ? currentValue / quantity : 0);
+
+  return {
+    assetType: "equity",
+    name: hasValue(body.name) ? String(body.name).trim() : fallback.name,
+    ticker: hasValue(body.ticker) ? String(body.ticker).trim().toUpperCase() : fallback.ticker,
+    quantity,
+    buyPrice,
+    buyDate: body.buyDate || fallback.buyDate || new Date(),
+    buyingPrice,
+    currentPrice,
+    currentValue,
+    notes: body.notes !== undefined ? body.notes : (fallback.notes || ""),
+  };
+};
+
+const enrichStandardAsset = (asset) => {
+  const currentValue = asset.currentValue ?? asset.buyingPrice ?? 0;
+  const totalCost = asset.buyingPrice ?? 0;
+  const gainLoss = currentValue - totalCost;
+  const quantity = asset.quantity ?? null;
+  const currentPrice = asset.assetType === "equity"
+    ? (asset.currentPrice ?? (quantity ? currentValue / quantity : null))
+    : null;
+
+  return {
+    ...asset.toObject(),
+    currentPrice,
+    currentValue,
+    gainLoss,
+    totalCost,
+  };
+};
 
 const fetchPrices = async (ids) => {
   const { data } = await axios.get(
@@ -19,8 +64,6 @@ const fetchPrices = async (ids) => {
 exports.addCryptoAsset = async (req, res, next) => {
   try {
     console.log("[addAsset] body:", JSON.stringify(req.body));
-
-    const VALID_TYPES = ["crypto", "cash", "vehicle", "property", "private_equity", "insurance", "valuables", "pension", "debt", "other"];
     const assetType = (req.body.assetType || "crypto").toString().trim();
 
     if (!VALID_TYPES.includes(assetType)) {
@@ -44,17 +87,26 @@ exports.addCryptoAsset = async (req, res, next) => {
         buyDate: buyDate || new Date(),
         notes: notes || "",
       });
+    } else if (assetType === "equity") {
+      const { name, ticker, quantity, buyPrice } = req.body;
+      if (!name || !ticker || !hasValue(quantity) || !hasValue(buyPrice)) {
+        return res.status(400).json({ success: false, message: "name, ticker, quantity and buyPrice are required for equity" });
+      }
+      asset = await CryptoAsset.create({
+        userId: req.user._id,
+        ...buildEquityPayload(req.body),
+      });
     } else {
       const { name, buyingPrice, notes } = req.body;
-      if (!name || buyingPrice === undefined || buyingPrice === null || String(buyingPrice).trim() === "") {
+      if (!name || !hasValue(buyingPrice)) {
         return res.status(400).json({ success: false, message: "name and buyingPrice are required for this asset type" });
       }
       asset = await CryptoAsset.create({
         userId: req.user._id,
         assetType,
         name: String(name).trim(),
-        buyingPrice: Number(buyingPrice),
-        currentValue: req.body.currentValue ? Number(req.body.currentValue) : Number(buyingPrice),
+        buyingPrice: toNumber(buyingPrice),
+        currentValue: hasValue(req.body.currentValue) ? toNumber(req.body.currentValue) : toNumber(buyingPrice),
         notes: notes || "",
       });
     }
@@ -90,13 +142,7 @@ exports.getCryptoAssets = async (req, res, next) => {
     const cryptoAssets    = assets.filter(a => a.assetType === "crypto");
     const nonCryptoAssets = assets.filter(a => a.assetType !== "crypto");
 
-    const enrichedNonCrypto = nonCryptoAssets.map(a => ({
-      ...a.toObject(),
-      currentPrice: null,
-      currentValue: a.currentValue ?? a.buyingPrice,
-      gainLoss: 0,
-      totalCost: a.buyingPrice,
-    }));
+    const enrichedNonCrypto = nonCryptoAssets.map(enrichStandardAsset);
 
     let enrichedCrypto = [];
     if (cryptoAssets.length > 0) {
@@ -144,17 +190,19 @@ exports.updateCryptoAsset = async (req, res, next) => {
       updateFields = {
         coin:     coin     ? String(coin).trim().toLowerCase()   : existing.coin,
         symbol:   symbol   ? String(symbol).trim().toUpperCase() : existing.symbol,
-        quantity: quantity ? Number(quantity) : existing.quantity,
-        buyPrice: buyPrice ? Number(buyPrice) : existing.buyPrice,
+        quantity: hasValue(quantity) ? toNumber(quantity) : existing.quantity,
+        buyPrice: hasValue(buyPrice) ? toNumber(buyPrice) : existing.buyPrice,
         buyDate:  buyDate  || existing.buyDate,
         notes:    notes !== undefined ? notes : existing.notes,
       };
+    } else if (existing.assetType === "equity") {
+      updateFields = buildEquityPayload(req.body, existing);
     } else {
       const { name, buyingPrice, currentValue, notes } = req.body;
       updateFields = {
         name:         name         ? String(name).trim()    : existing.name,
-        buyingPrice:  buyingPrice  ? Number(buyingPrice)    : existing.buyingPrice,
-        currentValue: currentValue !== undefined ? Number(currentValue) : existing.currentValue,
+        buyingPrice:  hasValue(buyingPrice) ? toNumber(buyingPrice) : existing.buyingPrice,
+        currentValue: currentValue !== undefined ? toNumber(currentValue) : existing.currentValue,
         notes:        notes !== undefined ? notes : existing.notes,
       };
     }

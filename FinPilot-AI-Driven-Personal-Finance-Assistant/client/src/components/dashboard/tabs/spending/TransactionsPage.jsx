@@ -127,17 +127,10 @@ const isAmountMatch = (amountValue, filter) => {
   return true;
 };
 
-export default function TransactionsPage({ transactionService, queryClient, C, txLimitReached, setAddModalOpen, pushNotif, hideHeader }) {
+export default function TransactionsPage({ transactionService, queryClient, C, apiTransactions = [], txLimitReached, setAddModalOpen, pushNotif, hideHeader, spendingSettings }) {
   const { user } = useAuthContext();
   const preferredCurrency = getUserCurrency(user);
   const formatAmount = (value, options = {}) => formatCurrencyAmount(Math.abs(value || 0), preferredCurrency, options);
-  const { data, isLoading } = useQuery({
-    queryKey: ["transactions-page", user?._id],
-    queryFn: () => transactionService.getList({ limit: 500 }).then((r) => r.data),
-    enabled: !!user?._id,
-    staleTime: 0,
-    refetchOnMount: true,
-  });
   const { data: categoryData } = useQuery({
     queryKey: ["transaction-categories", user?._id],
     queryFn: () => transactionCategoryService.list().then((r) => r.data),
@@ -146,7 +139,7 @@ export default function TransactionsPage({ transactionService, queryClient, C, t
     refetchOnMount: true,
   });
 
-  const apiTransactions = data?.transactions || [];
+  const isLoading = false;
   const customCategoryRecords = categoryData?.categories || [];
   const dotsRef = useRef(null);
   const [dotsOpen, setDotsOpen] = useState(false);
@@ -155,7 +148,7 @@ export default function TransactionsPage({ transactionService, queryClient, C, t
   const [selectMode, setSelectMode] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [search, setSearch] = useState("");
-  const [sortDir, setSortDir] = useState("desc");
+  const [sortDir, setSortDir] = useState(spendingSettings?.transactionPreferences?.defaultSortDirection || "desc");
   const [detailDraft, setDetailDraft] = useState(null);
   const [inlineField, setInlineField] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -171,6 +164,10 @@ export default function TransactionsPage({ transactionService, queryClient, C, t
   const [activeFilterSection, setActiveFilterSection] = useState(null);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [draftFilters, setDraftFilters] = useState(DEFAULT_FILTERS);
+
+  useEffect(() => {
+    setSortDir(spendingSettings?.transactionPreferences?.defaultSortDirection || "desc");
+  }, [spendingSettings?.transactionPreferences?.defaultSortDirection]);
 
   useEffect(() => {
     const close = (e) => { if (dotsRef.current && !dotsRef.current.contains(e.target)) setDotsOpen(false); };

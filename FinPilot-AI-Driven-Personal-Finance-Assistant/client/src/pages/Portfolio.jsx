@@ -7,7 +7,7 @@ import { CalendarPicker } from "../components/dashboard/tabs/SpendingTab";
 import { formatCurrencyAmount, getUserCurrency } from "../utils/currency";
 import {
   Plus, X, Pencil, Trash2, ChevronRight,
-  Car, Home, Building2, Gem, DollarSign, Layers, Shield, Trophy, Landmark, TrendingDown,
+  Car, Home, Building2, Gem, DollarSign, Layers, Shield, Trophy, Landmark, TrendingDown, TrendingUp,
 } from "lucide-react";
 
 /* ── Design tokens (Origin theme via CSS variables) ─────────────────── */
@@ -51,6 +51,7 @@ const fmtC = (n) => {
 /* ── Asset types ─────────────────────────────────────────── */
 const ASSET_TYPES = [
   { value: "crypto", label: "Crypto", icon: Gem, color: "#f59e0b" },
+  { value: "equity", label: "Equity", icon: TrendingUp, color: "#14b8a6" },
   { value: "cash", label: "Cash", icon: DollarSign, color: "#16a34a" },
   { value: "vehicle", label: "Vehicle", icon: Car, color: "#6366f1" },
   { value: "property", label: "Property", icon: Home, color: "#0d9488" },
@@ -62,6 +63,24 @@ const ASSET_TYPES = [
   { value: "other", label: "Other", icon: Layers, color: "#9ca3af" },
 ];
 const getTC = (type) => ASSET_TYPES.find(t => t.value === type) || ASSET_TYPES[ASSET_TYPES.length - 1];
+const isCryptoAsset = (asset) => asset?.assetType === "crypto";
+const isEquityAsset = (asset) => asset?.assetType === "equity";
+const getAssetName = (asset) => isCryptoAsset(asset) ? (asset.coin?.charAt(0).toUpperCase() + asset.coin?.slice(1)) : asset.name;
+const getAssetCost = (asset) => {
+  if (isCryptoAsset(asset) || isEquityAsset(asset)) return asset.totalCost ?? ((asset.buyPrice || 0) * (asset.quantity || 0));
+  return asset.buyingPrice || 0;
+};
+const getAssetValue = (asset) => asset.currentValue || 0;
+const getAssetGain = (asset) => {
+  if (asset.gainLoss !== undefined && asset.gainLoss !== null) return asset.gainLoss;
+  return getAssetValue(asset) - getAssetCost(asset);
+};
+const getAssetGainPct = (asset) => {
+  const cost = getAssetCost(asset);
+  const gain = getAssetGain(asset);
+  return cost > 0 ? (gain / cost) * 100 : null;
+};
+const getUnitLabel = (asset) => isEquityAsset(asset) ? "share" : "coin";
 
 function AssetIcon({ type, size = 32 }) {
   const cfg = getTC(type); const Icon = cfg.icon;
@@ -134,12 +153,13 @@ function ConfirmModal({ onConfirm, onCancel, loading }) {
 function AssetModal({ initial, onSave, onClose, loading, isEdit, currencyCode }) {
   const [step, setStep] = useState(isEdit ? "form" : "type");
   const def = {
-    assetType: "cash", coin: "", symbol: "", quantity: "",
-    buyPrice: "", buyDate: "", name: "", buyingPrice: "", currentValue: "", notes: ""
+    assetType: "cash", coin: "", symbol: "", quantity: "", ticker: "",
+    buyPrice: "", buyDate: "", name: "", buyingPrice: "", currentValue: "", currentPrice: "", notes: ""
   };
   const [form, setForm] = useState(initial || def);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const isCrypto = form.assetType === "crypto";
+  const isEquity = form.assetType === "equity";
 
   const handleSelectType = (type) => {
     set("assetType", type);
@@ -247,6 +267,53 @@ function AssetModal({ initial, onSave, onClose, loading, isEdit, currencyCode })
                     />
                   </div>
                 </>
+              ) : isEquity ? (
+                <>
+                  <div style={{ gridColumn: "1/-1" }}>
+                    <label style={labelSx}>Company / Fund Name *</label>
+                    <input value={form.name} onChange={e => set("name", e.target.value)}
+                      placeholder="e.g. Apple Inc." style={inputSx} />
+                  </div>
+                  <div>
+                    <label style={labelSx}>Ticker *</label>
+                    <input value={form.ticker} onChange={e => set("ticker", e.target.value.toUpperCase())}
+                      placeholder="AAPL" style={inputSx} />
+                  </div>
+                  <div>
+                    <label style={labelSx}>Quantity *</label>
+                    <input type="number" min="0" step="any" value={form.quantity}
+                      onChange={e => set("quantity", e.target.value)} placeholder="0.00" style={inputSx} />
+                  </div>
+                  <div>
+                    <label style={labelSx}>Average Buy Price ({currencyCode}) *</label>
+                    <input type="number" min="0" step="any" value={form.buyPrice}
+                      onChange={e => set("buyPrice", e.target.value)} placeholder="0.00" style={inputSx} />
+                  </div>
+                  <div>
+                    <label style={labelSx}>Current Price ({currencyCode})</label>
+                    <input type="number" min="0" step="any" value={form.currentPrice || ""}
+                      onChange={e => set("currentPrice", e.target.value)} placeholder="Optional live/manual price" style={inputSx} />
+                  </div>
+                  <div>
+                    <label style={labelSx}>Current Value ({currencyCode})</label>
+                    <input type="number" min="0" step="any" value={form.currentValue || ""}
+                      onChange={e => set("currentValue", e.target.value)} placeholder="Optional total market value" style={inputSx} />
+                  </div>
+                  <div>
+                    <label style={labelSx}>Buy Date</label>
+                    <CalendarPicker
+                      C={calendarColors}
+                      value={form.buyDate}
+                      onChange={(value) => set("buyDate", value)}
+                    />
+                  </div>
+                  <div style={{
+                    gridColumn: "1/-1", fontSize: 10.5, color: C.muted, marginTop: -4,
+                    lineHeight: 1.5
+                  }}>
+                    Add either a current price or a total current value. If both are filled, current value will be used.
+                  </div>
+                </>
               ) : (
                 <>
                   <div style={{ gridColumn: "1/-1" }}>
@@ -310,11 +377,12 @@ function AssetModal({ initial, onSave, onClose, loading, isEdit, currencyCode })
 
 /* ── Asset card (mobile) ─────────────────────────────────── */
 function AssetCard({ a, idx, onEdit, onDelete }) {
-  const isCrypto = a.assetType === "crypto";
-  const cost = isCrypto ? (a.buyPrice || 0) * (a.quantity || 0) : (a.buyingPrice || 0);
-  const value = a.currentValue || 0;
-  const gain = isCrypto ? (a.gainLoss ?? (value - cost)) : null;
-  const gainPct = gain != null && cost > 0 ? (gain / cost) * 100 : null;
+  const isCrypto = isCryptoAsset(a);
+  const isEquity = isEquityAsset(a);
+  const cost = getAssetCost(a);
+  const value = getAssetValue(a);
+  const gain = isCrypto || isEquity ? getAssetGain(a) : null;
+  const gainPct = gain != null ? getAssetGainPct(a) : null;
   const up = gain != null && gain >= 0;
   const cfg = getTC(a.assetType);
 
@@ -329,14 +397,16 @@ function AssetCard({ a, idx, onEdit, onDelete }) {
           <AssetIcon type={a.assetType} size={36} />
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
-              {isCrypto ? (a.coin?.charAt(0).toUpperCase() + a.coin?.slice(1)) : a.name}
+              {getAssetName(a)}
             </div>
             <div style={{
               display: "inline-flex", alignItems: "center", marginTop: 3,
               padding: "1px 8px", borderRadius: 100, background: `${cfg.color}12`,
               fontSize: 10, fontWeight: 600, color: cfg.color
             }}>
-              {cfg.label}{isCrypto && a.symbol ? ` · ${a.symbol.toUpperCase()}` : ""}
+              {cfg.label}
+              {isCrypto && a.symbol ? ` · ${a.symbol.toUpperCase()}` : ""}
+              {isEquity && a.ticker ? ` · ${a.ticker.toUpperCase()}` : ""}
             </div>
           </div>
         </div>
@@ -371,7 +441,7 @@ function AssetCard({ a, idx, onEdit, onDelete }) {
             fontSize: 9.5, color: C.muted, fontWeight: 600,
             textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3
           }}>
-            {isCrypto ? "Market Value" : "Asset Value"}
+            {isCrypto || isEquity ? "Market Value" : "Asset Value"}
           </div>
           <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{fmtC(value)}</div>
         </div>
@@ -380,11 +450,11 @@ function AssetCard({ a, idx, onEdit, onDelete }) {
             fontSize: 9.5, color: C.muted, fontWeight: 600,
             textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3
           }}>
-            {isCrypto ? "Invested" : "Paid"}
+            {isCrypto || isEquity ? "Invested" : "Paid"}
           </div>
           <div style={{ fontSize: 13, fontWeight: 600, color: C.sub }}>{fmtC(cost)}</div>
         </div>
-        {isCrypto && gain != null && (
+        {(isCrypto || isEquity) && gain != null && (
           <div style={{ textAlign: "right" }}>
             <div style={{
               fontSize: 9.5, color: C.muted, fontWeight: 600,
@@ -402,9 +472,9 @@ function AssetCard({ a, idx, onEdit, onDelete }) {
         )}
       </div>
 
-      {isCrypto && a.currentPrice != null && (
+      {(isCrypto || isEquity) && a.currentPrice != null && (
         <div style={{ fontSize: 10.5, color: C.muted }}>
-          Live price: <strong style={{ color: C.text }}>{fmt(a.currentPrice)}</strong> per {a.symbol?.toUpperCase()}
+          {isCrypto ? "Live price" : "Current price"}: <strong style={{ color: C.text }}>{fmt(a.currentPrice)}</strong> per {isCrypto ? a.symbol?.toUpperCase() : getUnitLabel(a)}
           {a.quantity && <span> · {a.quantity} held</span>}
         </div>
       )}
@@ -428,20 +498,23 @@ export default function Portfolio() {
 
   /* ── Aggregates ── */
   const agg = useMemo(() => {
-    const totalPortfolioValue = assets.reduce((s, a) => {
-      if (a.assetType === "crypto") return s + (a.currentValue || 0);
-      return s + (a.currentValue || a.buyingPrice || 0);
-    }, 0);
+    const totalPortfolioValue = assets.reduce((s, a) => s + getAssetValue(a), 0);
     const cryptoAssets = assets.filter(a => a.assetType === "crypto");
-    const otherAssets = assets.filter(a => a.assetType !== "crypto");
-    const cryptoValue = cryptoAssets.reduce((s, a) => s + (a.currentValue || 0), 0);
-    const cryptoInvested = cryptoAssets.reduce((s, a) => s + (a.buyPrice || 0) * (a.quantity || 0), 0);
-    const cryptoPL = cryptoAssets.reduce((s, a) => s + (a.gainLoss ?? 0), 0);
+    const equityAssets = assets.filter(a => a.assetType === "equity");
+    const otherAssets = assets.filter(a => !["crypto", "equity"].includes(a.assetType));
+    const cryptoValue = cryptoAssets.reduce((s, a) => s + getAssetValue(a), 0);
+    const cryptoInvested = cryptoAssets.reduce((s, a) => s + getAssetCost(a), 0);
+    const cryptoPL = cryptoAssets.reduce((s, a) => s + getAssetGain(a), 0);
     const cryptoPLPct = cryptoInvested > 0 ? (cryptoPL / cryptoInvested) * 100 : 0;
-    const otherValue = otherAssets.reduce((s, a) => s + (a.currentValue || a.buyingPrice || 0), 0);
+    const equityValue = equityAssets.reduce((s, a) => s + getAssetValue(a), 0);
+    const equityInvested = equityAssets.reduce((s, a) => s + getAssetCost(a), 0);
+    const equityPL = equityAssets.reduce((s, a) => s + getAssetGain(a), 0);
+    const equityPLPct = equityInvested > 0 ? (equityPL / equityInvested) * 100 : 0;
+    const otherValue = otherAssets.reduce((s, a) => s + getAssetValue(a), 0);
     return {
-      totalPortfolioValue, cryptoValue, cryptoInvested, cryptoPL, cryptoPLPct, otherValue,
-      cryptoCount: cryptoAssets.length, otherCount: otherAssets.length
+      totalPortfolioValue, cryptoValue, cryptoInvested, cryptoPL, cryptoPLPct,
+      equityValue, equityInvested, equityPL, equityPLPct, otherValue,
+      cryptoCount: cryptoAssets.length, equityCount: equityAssets.length, otherCount: otherAssets.length
     };
   }, [assets]);
 
@@ -450,10 +523,10 @@ export default function Portfolio() {
     return assets.filter(a => {
       if (typeFilter !== "All" && a.assetType !== typeFilter) return false;
       if (plFilter === "Profit") {
-        const g = a.gainLoss ?? 0; return g > 0;
+        const g = getAssetGain(a); return g > 0;
       }
       if (plFilter === "Loss") {
-        const g = a.gainLoss ?? 0; return g <= 0;
+        const g = getAssetGain(a); return g < 0;
       }
       return true;
     });
@@ -464,6 +537,9 @@ export default function Portfolio() {
     if (form.assetType === "crypto") {
       if (!form.coin || !form.symbol || !form.quantity || !form.buyPrice)
         return toast.error("Fill in all required fields");
+    } else if (form.assetType === "equity") {
+      if (!form.name || !form.ticker || !form.quantity || !form.buyPrice)
+        return toast.error("Name, ticker, quantity, and buy price are required");
     } else {
       if (!form.name || !form.buyingPrice) return toast.error("Name and value are required");
     }
@@ -500,6 +576,7 @@ export default function Portfolio() {
   };
 
   const isUp = agg.cryptoPL >= 0;
+  const equityUp = agg.equityPL >= 0;
 
   return (
     <div style={{
@@ -539,6 +616,13 @@ export default function Portfolio() {
               quantity: editTarget.quantity, buyPrice: editTarget.buyPrice,
               buyDate: editTarget.buyDate || "", notes: editTarget.notes || ""
             }
+            : editTarget.assetType === "equity"
+              ? {
+                assetType: "equity", name: editTarget.name, ticker: editTarget.ticker || "",
+                quantity: editTarget.quantity || "", buyPrice: editTarget.buyPrice || "",
+                currentPrice: editTarget.currentPrice || "", currentValue: editTarget.currentValue || "",
+                buyDate: editTarget.buyDate || "", notes: editTarget.notes || ""
+              }
             : {
               assetType: editTarget.assetType, name: editTarget.name,
               buyingPrice: editTarget.buyingPrice, currentValue: editTarget.currentValue || "", notes: editTarget.notes || ""
@@ -585,7 +669,7 @@ export default function Portfolio() {
             {fmtC(agg.totalPortfolioValue)}
           </div>
           <div style={{ fontSize: 10.5, color: C.muted }}>
-            {agg.cryptoCount} crypto + {agg.otherCount} other asset{agg.otherCount !== 1 ? "s" : ""}
+            {agg.cryptoCount} crypto + {agg.equityCount} equity + {agg.otherCount} other
           </div>
         </div>
 
@@ -608,23 +692,23 @@ export default function Portfolio() {
           <div style={{
             fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase",
             letterSpacing: "0.08em", marginBottom: 8
-          }}>Crypto P / L</div>
-          {agg.cryptoCount > 0 ? (
+          }}>Equity Holdings</div>
+          {agg.equityCount > 0 ? (
             <>
               <div style={{
                 fontSize: 20, fontWeight: 800, letterSpacing: "-0.4px", marginBottom: 3,
-                color: isUp ? C.greenMid : C.red
+                color: C.text
               }}>
-                {isUp ? "+" : "-"}{fmtC(Math.abs(agg.cryptoPL))}
+                {fmtC(agg.equityValue)}
               </div>
-              <div style={{ fontSize: 10.5, color: isUp ? C.greenMid : C.red }}>
-                {isUp ? "▲" : "▼"} {Math.abs(agg.cryptoPLPct).toFixed(1)}% on crypto
+              <div style={{ fontSize: 10.5, color: equityUp ? C.greenMid : C.red }}>
+                {equityUp ? "▲" : "▼"} {Math.abs(agg.equityPLPct).toFixed(1)}% on equity
               </div>
             </>
           ) : (
             <>
               <div style={{ fontSize: 20, fontWeight: 800, color: C.muted, letterSpacing: "-0.4px", marginBottom: 3 }}>—</div>
-              <div style={{ fontSize: 10.5, color: C.muted }}>No crypto tracked</div>
+              <div style={{ fontSize: 10.5, color: C.muted }}>No equity tracked</div>
             </>
           )}
         </div>
@@ -639,7 +723,7 @@ export default function Portfolio() {
             {fmtC(agg.otherValue)}
           </div>
           <div style={{ fontSize: 10.5, color: C.muted }}>
-            Cash, property, vehicles, etc.
+            Cash, property, vehicles, private equity, and more
           </div>
         </div>
       </div>
@@ -689,7 +773,7 @@ export default function Portfolio() {
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
             <thead>
               <tr style={{ background: C.bg }}>
-                {["Asset", "Type", "Current Value", "Invested / Paid", "Crypto P/L", ""].map((h, i) => (
+                {["Asset", "Type", "Current Value", "Invested / Paid", "Profit / Loss", ""].map((h, i) => (
                   <th key={i} style={{
                     padding: "9px 16px", textAlign: i === 5 ? "right" : "left",
                     fontSize: 9.5, fontWeight: 700, color: C.muted, textTransform: "uppercase",
@@ -718,11 +802,12 @@ export default function Portfolio() {
                   </td>
                 </tr>
               ) : filtered.map((a, idx) => {
-                const isCrypto = a.assetType === "crypto";
-                const cost = isCrypto ? (a.buyPrice || 0) * (a.quantity || 0) : (a.buyingPrice || 0);
-                const value = a.currentValue || 0;
-                const gain = isCrypto ? (a.gainLoss ?? (value - cost)) : null;
-                const gainPct = gain != null && cost > 0 ? (gain / cost) * 100 : null;
+                const isCrypto = isCryptoAsset(a);
+                const isEquity = isEquityAsset(a);
+                const cost = getAssetCost(a);
+                const value = getAssetValue(a);
+                const gain = isCrypto || isEquity ? getAssetGain(a) : null;
+                const gainPct = gain != null ? getAssetGainPct(a) : null;
                 const up = gain != null && gain >= 0;
                 const cfg = getTC(a.assetType);
                 return (
@@ -736,10 +821,10 @@ export default function Portfolio() {
                         <AssetIcon type={a.assetType} size={32} />
                         <div>
                           <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
-                            {isCrypto ? (a.coin?.charAt(0).toUpperCase() + a.coin?.slice(1)) : a.name}
+                            {getAssetName(a)}
                           </div>
                           <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>
-                            {isCrypto ? a.symbol?.toUpperCase() : cfg.label}
+                            {isCrypto ? a.symbol?.toUpperCase() : isEquity ? a.ticker?.toUpperCase() : cfg.label}
                           </div>
                         </div>
                       </div>
@@ -752,7 +837,7 @@ export default function Portfolio() {
                         fontSize: 10.5, fontWeight: 600, color: cfg.color
                       }}>
                         {cfg.label}
-                        {isCrypto && a.quantity != null && (
+                        {(isCrypto || isEquity) && a.quantity != null && (
                           <span style={{ color: `${cfg.color}99`, fontWeight: 400 }}> · {a.quantity}</span>
                         )}
                       </div>
@@ -762,17 +847,22 @@ export default function Portfolio() {
                       <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
                         {value ? fmtC(value) : <span style={{ color: C.muted }}>—</span>}
                       </div>
-                      {isCrypto && a.currentPrice != null && (
+                      {(isCrypto || isEquity) && a.currentPrice != null && (
                         <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>
-                          {fmt(a.currentPrice)} / coin
+                          {fmt(a.currentPrice)} / {getUnitLabel(a)}
                         </div>
                       )}
                     </td>
                     {/* Cost */}
                     <td style={{ padding: "12px 16px" }}>
                       <div style={{ fontSize: 13, color: C.sub, fontWeight: 500 }}>{fmtC(cost)}</div>
-                      {!isCrypto && (
+                      {!(isCrypto || isEquity) && (
                         <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>Purchase price</div>
+                      )}
+                      {isEquity && (
+                        <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>
+                          Avg buy {fmt(a.buyPrice || 0)} / share
+                        </div>
                       )}
                     </td>
                     {/* P/L */}
@@ -841,6 +931,11 @@ export default function Portfolio() {
               {agg.cryptoCount > 0 && (
                 <span style={{ fontWeight: 700, color: isUp ? C.greenMid : C.red }}>
                   Crypto {isUp ? "+" : "-"}{fmtC(Math.abs(agg.cryptoPL))} ({isUp ? "+" : "-"}{Math.abs(agg.cryptoPLPct).toFixed(1)}%)
+                </span>
+              )}
+              {agg.equityCount > 0 && (
+                <span style={{ fontWeight: 700, color: equityUp ? C.greenMid : C.red }}>
+                  Equity {equityUp ? "+" : "-"}{fmtC(Math.abs(agg.equityPL))} ({equityUp ? "+" : "-"}{Math.abs(agg.equityPLPct).toFixed(1)}%)
                 </span>
               )}
             </div>

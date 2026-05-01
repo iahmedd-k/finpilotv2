@@ -193,6 +193,47 @@ const userSchema = new mongoose.Schema(
         amount: { type: Number, required: true, min: [0, "Budget cannot be negative"] },
       },
     ],
+
+    // ─── Spending settings ────────────────────────────────
+    spendingSettings: {
+      budgetSettings: {
+        defaultMonthlyBudget: { type: Number, default: 0, min: [0, "Budget cannot be negative"] },
+        budgetWarning50: { type: Boolean, default: true },
+        budgetWarning80: { type: Boolean, default: true },
+        budgetWarning100: { type: Boolean, default: true },
+        carryForwardBudget: { type: Boolean, default: true },
+        resetPeriod: { type: String, enum: ["monthly"], default: "monthly" },
+      },
+      categorySettings: {
+        hiddenCategoryIds: { type: [String], default: [] },
+      },
+      alertSettings: {
+        notificationsEnabled: { type: Boolean, default: true },
+        categorySpikeAlerts: { type: Boolean, default: true },
+        categorySpikePercent: { type: Number, default: 25, min: 0, max: 500 },
+        largeTransactionAlerts: { type: Boolean, default: true },
+        largeTransactionAmount: { type: Number, default: 500, min: [0, "Amount cannot be negative"] },
+        recurringReminderAlerts: { type: Boolean, default: true },
+      },
+      recurringSettings: {
+        reminderDaysBefore: { type: Number, default: 3, min: 0, max: 60 },
+        autoDetectRecurring: { type: Boolean, default: true },
+        showInferredRecurring: { type: Boolean, default: true },
+        defaultExpenseCategory: { type: String, default: "Subscriptions" },
+        defaultIncomeCategory: { type: String, default: "Salary" },
+      },
+      transactionPreferences: {
+        defaultReviewStatus: { type: String, enum: ["needs_review", "reviewed"], default: "needs_review" },
+        includeHiddenInAnalytics: { type: Boolean, default: false },
+        includeRecurringInBudget: { type: Boolean, default: true },
+        defaultSortDirection: { type: String, enum: ["asc", "desc"], default: "desc" },
+      },
+      reportPreferences: {
+        defaultRange: { type: String, enum: ["last_30_days", "last_90_days", "last_6_months", "year_to_date", "all_time"], default: "last_6_months" },
+        defaultTab: { type: String, enum: ["cashflow", "expenses", "income"], default: "cashflow" },
+        defaultViewBy: { type: String, enum: ["Category", "Merchant"], default: "Category" },
+      },
+    },
   },
   {
     timestamps: true,

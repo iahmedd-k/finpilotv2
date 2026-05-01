@@ -711,6 +711,7 @@ html,body { height:100%; background:${C.bg}; }
                 budget={apiBudget} categoryBreakdown={categoryBreakdown}
                 onBudgetSaved={() => queryClient.invalidateQueries({ queryKey: ["dashboard"] })}
                 setShowAdvisor={setShowAdvisor}
+                spendingSettings={dashboard?.spendingSettings}
               />
               )}
 

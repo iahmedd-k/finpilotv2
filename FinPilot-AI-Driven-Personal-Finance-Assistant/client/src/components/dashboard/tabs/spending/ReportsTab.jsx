@@ -1,14 +1,41 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ResponsiveContainer, ComposedChart, CartesianGrid, XAxis, YAxis, Tooltip, Bar, Line, BarChart } from "recharts";
+import { ResponsiveContainer, CartesianGrid, XAxis, YAxis, Tooltip, Bar, BarChart } from "recharts";
 import { ChevronDown, Filter, Search, X, Download, ArrowDownRight } from "lucide-react";
 import { C, dedupToast, formatAmount } from "../../dashboardShared.jsx";
+import { CalendarPicker, formatDateInputValue } from "../SpendingTab.jsx";
 import { useAuthContext } from "../../../../hooks/useAuthContext";
 import { formatCurrencyAmount, getUserCurrency } from "../../../../utils/currency";
-function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency: preferredCurrencyProp, setSpendTab }) {
+
+const rangeToDates = (range, earliestTxDate, todayStr) => {
+  const today = new Date(todayStr);
+  if (range === "last_30_days") {
+    const d = new Date(today);
+    d.setDate(d.getDate() - 29);
+    return { from: d.toISOString().slice(0, 10), to: todayStr };
+  }
+  if (range === "last_90_days") {
+    const d = new Date(today);
+    d.setDate(d.getDate() - 89);
+    return { from: d.toISOString().slice(0, 10), to: todayStr };
+  }
+  if (range === "year_to_date") {
+    return { from: `${today.getFullYear()}-01-01`, to: todayStr };
+  }
+  if (range === "all_time") {
+    return { from: earliestTxDate || todayStr, to: todayStr };
+  }
+  const sixMonthStart = new Date(today);
+  sixMonthStart.setMonth(sixMonthStart.getMonth() - 5);
+  sixMonthStart.setDate(1);
+  return { from: sixMonthStart.toISOString().slice(0, 10), to: todayStr };
+};
+
+function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency: preferredCurrencyProp, setSpendTab, reportPreferences }) {
   const { user } = useAuthContext();
   const preferredCurrency = preferredCurrencyProp || getUserCurrency(user);
-  const [reportTab,    setReportTab]    = useState("cashflow"); // cashflow|expenses|income
-  const [viewBy,       setViewBy]       = useState("Category");
+  const [reportTab,    setReportTab]    = useState(reportPreferences?.defaultTab || "cashflow"); // cashflow|expenses|income
+  const [viewBy,       setViewBy]       = useState(reportPreferences?.defaultViewBy || "Category");
+  const [tableSort,    setTableSort]    = useState({ key: "month", dir: "desc" });
   const [viewByOpen,   setViewByOpen]   = useState(false);
   const REPORTS_STORAGE_KEY = "finpilot:spending:reports:v1";
   const [savedReports, setSavedReports] = useState(() => {
@@ -42,13 +69,45 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
     const minTs = Math.min(...timestamps);
     return new Date(minTs).toISOString().slice(0, 10);
   }, [apiTransactions]);
-  const defaultFrom = earliestTxDate || sixMonthsAgo;
+  const latestTxDate = useMemo(() => {
+    if (!apiTransactions.length) return todayStr;
+    const timestamps = apiTransactions
+      .map((t) => new Date(t?.date).getTime())
+      .filter((ts) => Number.isFinite(ts));
+    if (!timestamps.length) return todayStr;
+    const maxTs = Math.max(...timestamps);
+    return new Date(maxTs).toISOString().slice(0, 10);
+  }, [apiTransactions, todayStr]);
+  const defaultRange = rangeToDates(reportPreferences?.defaultRange, earliestTxDate, latestTxDate);
+  const defaultFrom = defaultRange.from || earliestTxDate || sixMonthsAgo;
 
   const [dateFrom, setDateFrom] = useState(defaultFrom);
-  const [dateTo,   setDateTo]   = useState(todayStr);
+  const [dateTo,   setDateTo]   = useState(defaultRange.to || latestTxDate);
   const [filterOpen, setFilterOpen] = useState(false);
   const [draftFrom, setDraftFrom] = useState(defaultFrom);
-  const [draftTo,   setDraftTo]   = useState(todayStr);
+  const [draftTo,   setDraftTo]   = useState(defaultRange.to || latestTxDate);
+
+  useEffect(() => {
+    const nextRange = rangeToDates(reportPreferences?.defaultRange, earliestTxDate, latestTxDate);
+    const nextFrom = nextRange.from || earliestTxDate || sixMonthsAgo;
+    const nextTo = nextRange.to || latestTxDate;
+    setReportTab(reportPreferences?.defaultTab || "cashflow");
+    setViewBy(reportPreferences?.defaultViewBy || "Category");
+    setDateFrom(nextFrom);
+    setDateTo(nextTo);
+    setDraftFrom(nextFrom);
+    setDraftTo(nextTo);
+  }, [earliestTxDate, latestTxDate, reportPreferences?.defaultRange, reportPreferences?.defaultTab, reportPreferences?.defaultViewBy, sixMonthsAgo]);
+
+  useEffect(() => {
+    setTableSort({ key: "month", dir: "desc" });
+  }, [reportTab]);
+
+  useEffect(() => {
+    if (reportTab === "cashflow" && viewBy === "Category") {
+      setViewBy("Month");
+    }
+  }, [reportTab, viewBy]);
 
   // Close viewBy dropdown on outside click
   useEffect(() => {
@@ -222,6 +281,7 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
         longLabel,
         income: existing?.income || 0,
         expense: existing?.expense || 0,
+        expenseSigned: -(existing?.expense || 0),
         net: existing?.net || 0,
         currentMonthExpense: existing?.currentMonthExpense ?? null,
       });
@@ -229,17 +289,106 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
 
     return out;
   }, [chartData]);
+  const cashFlowAxisLimit = useMemo(() => {
+    const maxAbs = cashFlowChartData.reduce((max, row) => {
+      const rowMax = Math.max(
+        Math.abs(row.income || 0),
+        Math.abs(row.expenseSigned || 0),
+        Math.abs(row.net || 0),
+      );
+      return Math.max(max, rowMax);
+    }, 0);
+    if (maxAbs <= 0) return 100;
+    return Math.ceil((maxAbs * 1.2) / 500) * 500;
+  }, [cashFlowChartData]);
+
+  // ── Category table rows ──────────────────────────────
+  const categoryRows = useMemo(() => {
+    const categoryMap = {};
+    filtered.forEach(t => {
+      const category = t.category || "Other";
+      const type = t._normalizedType;
+      const key = `${category}__${type}`;
+      if (!categoryMap[key]) {
+        categoryMap[key] = { category, type, amount: 0, count: 0 };
+      }
+      categoryMap[key].amount += t._normalizedAmount;
+      categoryMap[key].count += 1;
+    });
+
+    const rows = Object.values(categoryMap)
+      .filter(row => {
+        if (reportTab === "expenses") return row.type === "expense";
+        if (reportTab === "income") return row.type === "income";
+        return true;
+      })
+      .map((row, i, arr) => {
+        const totalAmount = arr.reduce((s, r) => s + r.amount, 0);
+        const pct = totalAmount > 0 ? Math.round((row.amount / totalAmount) * 100) : 0;
+        return {
+          key: row.category,
+          label: row.category,
+          current: row.amount,
+          count: row.count,
+          pct,
+          changePct: 0,
+        };
+      });
+
+    return rows.sort((a, b) => {
+      const dir = tableSort.dir === "asc" ? 1 : -1;
+      if (tableSort.key === "value") return (a.current - b.current) * dir;
+      if (tableSort.key === "change") return ((a.pct || 0) - (b.pct || 0)) * dir;
+      return (a.key || "").localeCompare(b.key || "") * dir;
+    });
+  }, [filtered, reportTab, tableSort]);
+
+  // ── Type table rows ───────────────────────────────────
+  const typeRows = useMemo(() => {
+    let incomeTotal = 0, expenseTotal = 0, incomeCount = 0, expenseCount = 0;
+    filtered.forEach(t => {
+      if (t._normalizedType === "income") {
+        incomeTotal += t._normalizedAmount;
+        incomeCount += 1;
+      } else {
+        expenseTotal += t._normalizedAmount;
+        expenseCount += 1;
+      }
+    });
+
+    const rows = [];
+    if (reportTab !== "expenses") rows.push({ key: "income", label: "Income", current: incomeTotal, count: incomeCount, pct: 0, changePct: 0 });
+    if (reportTab !== "income") rows.push({ key: "expense", label: "Expenses", current: expenseTotal, count: expenseCount, pct: 0, changePct: 0 });
+
+    const totalAmount = incomeTotal + expenseTotal;
+    return rows.map(r => ({ ...r, pct: totalAmount > 0 ? Math.round((r.current / totalAmount) * 100) : 0 }))
+      .sort((a, b) => {
+        const dir = tableSort.dir === "asc" ? 1 : -1;
+        if (tableSort.key === "value") return (a.current - b.current) * dir;
+        if (tableSort.key === "change") return ((a.pct || 0) - (b.pct || 0)) * dir;
+        return (a.key || "").localeCompare(b.key || "") * dir;
+      });
+  }, [filtered, reportTab, tableSort]);
 
   // ── Month table rows ──────────────────────────────────
-  const tableRows = useMemo(() => {
-    return [...monthlyBuckets].reverse().map((m, i, arr) => {
+  const monthRows = useMemo(() => {
+    const baseRows = [...monthlyBuckets].reverse().map((m, i, arr) => {
       const prev     = arr[i + 1];
       const current  = reportTab === "income" ? m.income : reportTab === "expenses" ? m.expense : m.income - m.expense;
       const prevVal  = prev ? (reportTab === "income" ? prev.income : reportTab === "expenses" ? prev.expense : prev.income - prev.expense) : null;
       const changePct = prevVal != null && prevVal > 0 ? Math.round(((current - prevVal) / prevVal) * 100) : 0;
-      return { key: m.key, longLabel: m.longLabel, current, prevVal, changePct };
+      return { key: m.key, label: m.longLabel, current, prevVal, changePct };
     });
-  }, [monthlyBuckets, reportTab]);
+    return baseRows.sort((a, b) => {
+      const dir = tableSort.dir === "asc" ? 1 : -1;
+      if (tableSort.key === "value") return (a.current - b.current) * dir;
+      if (tableSort.key === "change") return ((a.changePct || 0) - (b.changePct || 0)) * dir;
+      return (a.key || "").localeCompare(b.key || "") * dir;
+    });
+  }, [monthlyBuckets, reportTab, tableSort]);
+
+  // ── Select appropriate rows based on viewBy ──────────
+  const tableRows = viewBy === "Category" ? categoryRows : viewBy === "Summary" ? typeRows : monthRows;
 
   // ── Date range label ──────────────────────────────────
   const dateRangeLabel = useMemo(() => {
@@ -288,6 +437,27 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
     setDraftFrom(r.dateFrom); setDraftTo(r.dateTo);
   };
 
+  const toggleTableSort = (key) => {
+    setTableSort((prev) => (
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key === "month" ? "desc" : "asc" }
+    ));
+  };
+
+  const activateDateRange = (from, to, label) => {
+    setDateFrom(from);
+    setDateTo(to);
+    setDraftFrom(from);
+    setDraftTo(to);
+    if (label) dedupToast.info(`Filtered to ${label}`);
+  };
+
+  const getSortIndicator = (key) => {
+    if (tableSort.key !== key) return "";
+    return tableSort.dir === "asc" ? "↑" : "↓";
+  };
+
   // ── Sub-tab config ────────────────────────────────────
   const REPORT_TABS = [
     { id: "cashflow",  label: "Cash flow"  },
@@ -317,7 +487,7 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
           </button>
           {viewByOpen && (
             <div style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", background: "var(--bg-secondary)", border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", zIndex: 100, minWidth: 150, overflow: "hidden" }}>
-              {["Category", "Month", "Type"].map(v => (
+              {["Category", "Month", "Summary"].map(v => (
                 <button key={v} type="button" onClick={() => { setViewBy(v); setViewByOpen(false); }}
                   style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 16px", border: "none", background: viewBy === v ? C.bg : "none", fontSize: 13, fontWeight: viewBy === v ? 600 : 400, color: C.text, cursor: "pointer", fontFamily: "inherit" }}>
                   {v}
@@ -374,7 +544,7 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
             <span>Income</span><strong style={{ color: "#059669" }}>{fmtFull(income)}</strong>
           </div>
           <div style={{ fontSize: 12, color: C.sub, display: "flex", justifyContent: "space-between", gap: 12 }}>
-            <span>Expenses</span><strong style={{ color: "#2563eb" }}>{fmtFull(expense)}</strong>
+            <span>Expenses</span><strong style={{ color: "#ea580c" }}>{fmtFull(expense)}</strong>
           </div>
           <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 4, paddingTop: 6, fontSize: 12.5, color: C.text, display: "flex", justifyContent: "space-between", gap: 12 }}>
             <span>Net cash flow</span>
@@ -396,7 +566,7 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
           <span style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Reports</span>
           {/* Filter icon */}
           <button type="button" onClick={() => setFilterOpen(v => !v)}
-            style={{ width: 30, height: 30, borderRadius: 7, border: `1px solid ${filterOpen ? C.text : C.border}`, background: filterOpen ? C.text : "var(--bg-secondary)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.12s", appearance: "none", outline: "none", WebkitTapHighlightColor: "transparent" }}>
+            style={{ width: 30, height: 30, borderRadius: 7, border: `1px solid ${filterOpen ? C.text : C.border}`, background: filterOpen ? C.text : "var(--bg-secondary)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.12s", appearance: "none", outline: "none", WebkitTapHighlightColor: "transparent", padding: 0 }}>
             <Filter size={13} style={{ color: filterOpen ? C.textInverse : C.muted }} />
           </button>
         </div>
@@ -404,21 +574,23 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
         {/* Filter date range panel */}
         {filterOpen && (
           <div style={{ padding: "14px 20px", background: "var(--surface-muted)", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <label style={{ fontSize: 11, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>From</label>
-              <input type="date" value={draftFrom} onChange={e => setDraftFrom(e.target.value)}
-                style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "6px 10px", fontSize: 12.5, color: C.text, background: "var(--bg-secondary)", outline: "none", fontFamily: "inherit" }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flex: isMobile ? "1 1 100%" : "0 0 auto" }}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>From</label>
+              <div style={{ minWidth: 120 }}>
+                <CalendarPicker C={C} value={draftFrom} onChange={setDraftFrom} />
+              </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <label style={{ fontSize: 11, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>To</label>
-              <input type="date" value={draftTo} onChange={e => setDraftTo(e.target.value)}
-                style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "6px 10px", fontSize: 12.5, color: C.text, background: "var(--bg-secondary)", outline: "none", fontFamily: "inherit" }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flex: isMobile ? "1 1 100%" : "0 0 auto" }}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: C.muted, textTransform: "uppercase", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>To</label>
+              <div style={{ minWidth: 120 }}>
+                <CalendarPicker C={C} value={draftTo} onChange={setDraftTo} />
+              </div>
             </div>
             <button type="button" onClick={() => { setDateFrom(draftFrom); setDateTo(draftTo); setFilterOpen(false); }}
-              style={{ padding: "7px 18px", borderRadius: 8, border: "none", background: C.strong, color: C.onStrong, fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+              style={{ padding: "7px 18px", borderRadius: 8, border: "none", background: C.strong, color: C.onStrong, fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", appearance: "none", outline: "none", WebkitTapHighlightColor: "transparent" }}>
               Apply
             </button>
-            <button type="button" onClick={() => { setDraftFrom(defaultFrom); setDraftTo(todayStr); setDateFrom(defaultFrom); setDateTo(todayStr); setFilterOpen(false); }}
+            <button type="button" onClick={() => { setDraftFrom(defaultFrom); setDraftTo(latestTxDate); setDateFrom(defaultFrom); setDateTo(latestTxDate); setFilterOpen(false); }}
               style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "var(--bg-secondary)", color: C.sub, fontSize: 12.5, fontWeight: 500, cursor: "pointer", fontFamily: "inherit", appearance: "none", outline: "none", WebkitTapHighlightColor: "transparent" }}>
               Reset
             </button>
@@ -442,20 +614,30 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
             <div style={{ fontSize: 16, fontWeight: 600, color: C.text }}>Report Summary</div>
             <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>{dateRangeLabel}</div>
           </div>
-          {renderReportsControls(true)}
+          {renderReportsControls(reportTab !== "cashflow")}
         </div>
 
         {/* ── CHART AREA ── */}
         {!hasRelevantData ? renderEmptyState() : (
           <div style={{ padding: "0 20px 20px" }}>
             <div style={{ width: "100%", minHeight: 280, background: "var(--surface-muted)", borderRadius: 16, padding: "24px 16px 16px", border: `1px solid ${C.border}` }}>
-              {/* Cash flow: composed chart with trend line + current month expense bar */}
               {reportTab === "cashflow" && (
-                <ResponsiveContainer width="100%" height={262}>
-                  <ComposedChart
-                    data={cashFlowChartData}
-                    margin={{ top: 10, right: 10, bottom: 0, left: 0 }}
-                  >
+                <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "0 6px 14px" }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: C.muted }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 999, background: "#0d9488", display: "inline-block" }} />
+                    Income
+                  </span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: C.muted }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 999, background: "#ffb95a", display: "inline-block" }} />
+                    Expenses
+                  </span>
+                </div>
+              )}
+
+              {/* Cash flow: clean grouped bars */}
+              {reportTab === "cashflow" && (
+                <ResponsiveContainer width="100%" height={248}>
+                  <BarChart data={cashFlowChartData} margin={{ top: 4, right: 10, bottom: 0, left: 0 }} barGap={8}>
                     <CartesianGrid vertical={false} stroke="var(--border-subtle)" strokeDasharray="4 4" />
                     <XAxis
                       dataKey="month"
@@ -467,10 +649,18 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
                       axisLine={false}
                       tickLine={false}
                       orientation="right"
+                      domain={[0, cashFlowAxisLimit]}
                       tickFormatter={(v) => formatAmount(v, { maximumFractionDigits: 0 })}
                       tick={{ fontSize: 11, fill: C.muted }}
                     />
                     <Tooltip content={renderCashFlowTooltip} cursor={{ fill: "rgba(0,0,0,0.02)" }} />
+                    <Bar
+                      dataKey="income"
+                      name="Income"
+                      radius={[6, 6, 0, 0]}
+                      fill="#0d9488"
+                      barSize={24}
+                    />
                     <Bar
                       dataKey="expense"
                       name="Expenses"
@@ -478,22 +668,13 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
                       fill="#ffb95a"
                       barSize={24}
                     />
-                    <Line
-                      type="monotone"
-                      dataKey="net"
-                      name="Net cash flow"
-                      stroke={C.text}
-                      strokeWidth={2}
-                      dot={{ r: 4, fill: C.text, strokeWidth: 0 }}
-                      activeDot={{ r: 6, fill: C.text }}
-                    />
-                  </ComposedChart>
+                  </BarChart>
                 </ResponsiveContainer>
               )}
 
               {/* Expenses / Income: clean SaaS bar chart */}
               {reportTab !== "cashflow" && (
-                <ResponsiveContainer width="100%" height={262}>
+                <ResponsiveContainer width="100%" height={262} key={`bar-${reportTab}`}>
                   <BarChart data={expensesIncomeChartData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
                     <CartesianGrid vertical={false} stroke="var(--border-subtle)" strokeDasharray="4 4" />
                     <XAxis
@@ -511,7 +692,9 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
                     />
                     <Tooltip content={renderExpenseIncomeTooltip} cursor={{ fill: "rgba(0,0,0,0.02)" }} />
                     <Bar
+                      key={reportTab}
                       dataKey={reportTab === "expenses" ? "expense" : "income"}
+                      name={reportTab === "expenses" ? "Expenses" : "Income"}
                       fill={reportTab === "expenses" ? "#ffb95a" : "#0d9488"}
                       radius={[6, 6, 0, 0]}
                       barSize={32}
@@ -524,55 +707,131 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
             {/* ── KPI stat bar / summary ── */}
             <div style={{ display: "grid", gridTemplateColumns: reportTab === "cashflow" ? "repeat(2,1fr)" : "repeat(2,1fr)", gap: 12, marginTop: 12 }}>
               {reportTab === "cashflow" && [
-                { label: "Total income", value: fmtFull(totalIncome) },
-                { label: "Total expenses", value: fmtFull(totalExpenses) },
-                { label: "Net cash flow", value: fmtFull(netCashFlow), color: netCashFlow >= 0 ? "#16a34a" : C.text },
-                { label: "Avg monthly net", value: fmtFull(avgCashFlow) },
+                { label: "Total income", value: fmtFull(totalIncome), onClick: () => setReportTab("income") },
+                { label: "Total expenses", value: fmtFull(totalExpenses), onClick: () => setReportTab("expenses") },
+                { label: "Net cash flow", value: fmtFull(netCashFlow), color: netCashFlow >= 0 ? "#16a34a" : C.text, onClick: () => setReportTab("cashflow") },
+                { label: "Avg monthly net", value: fmtFull(avgCashFlow), onClick: () => setReportTab("cashflow") },
               ].map((s) => (
-                <div key={s.label} style={{ padding: "16px", borderRadius: 14, background: "var(--surface-muted)", border: `1px solid ${C.border}` }}>
+                <button key={s.label} type="button" onClick={s.onClick} style={{ padding: "16px", borderRadius: 14, background: "var(--surface-muted)", border: `1px solid ${C.border}`, textAlign: "left", cursor: "pointer", fontFamily: "inherit" }}>
                   <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.02em" }}>{s.label}</div>
                   <div style={{ fontSize: 18, fontWeight: 700, color: s.color || C.text }}>{s.value}</div>
-                </div>
+                </button>
               ))}
               {reportTab === "expenses" && [
-                { label: "Total expenses", value: fmtFull(totalExpenses) },
-                { label: "Avg expenses / mo", value: fmtFull(avgExpenses) },
+                { label: "Total expenses", value: fmtFull(totalExpenses), onClick: () => setSpendTab?.("transactions") },
+                { label: "Avg expenses / mo", value: fmtFull(avgExpenses), onClick: () => setSpendTab?.("transactions") },
               ].map((s) => (
-                <div key={s.label} style={{ padding: "16px", borderRadius: 14, background: "var(--surface-muted)", border: `1px solid ${C.border}` }}>
+                <button key={s.label} type="button" onClick={s.onClick} style={{ padding: "16px", borderRadius: 14, background: "var(--surface-muted)", border: `1px solid ${C.border}`, textAlign: "left", cursor: "pointer", fontFamily: "inherit" }}>
                   <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.02em" }}>{s.label}</div>
                   <div style={{ fontSize: 18, fontWeight: 700, color: C.text }}>{s.value}</div>
-                </div>
+                </button>
               ))}
               {reportTab === "income" && [
-                { label: "Total income", value: fmtFull(totalIncome) },
-                { label: "Avg income / mo", value: fmtFull(avgIncome) },
+                { label: "Total income", value: fmtFull(totalIncome), onClick: () => setSpendTab?.("transactions") },
+                { label: "Avg income / mo", value: fmtFull(avgIncome), onClick: () => setSpendTab?.("transactions") },
               ].map((s) => (
-                <div key={s.label} style={{ padding: "16px", borderRadius: 14, background: "var(--surface-muted)", border: `1px solid ${C.border}` }}>
+                <button key={s.label} type="button" onClick={s.onClick} style={{ padding: "16px", borderRadius: 14, background: "var(--surface-muted)", border: `1px solid ${C.border}`, textAlign: "left", cursor: "pointer", fontFamily: "inherit" }}>
                   <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.02em" }}>{s.label}</div>
                   <div style={{ fontSize: 18, fontWeight: 700, color: C.text }}>{s.value}</div>
-                </div>
+                </button>
               ))}
             </div>
 
-            {/* ── Month-by-month table ── */}
+            <div style={{ marginTop: 10, fontSize: 12, color: C.muted }}>
+              {viewBy === "Month" ? "Click a month row to filter this report to that month." : `Viewing ${viewBy.toLowerCase()} breakdown for the selected period.`}
+            </div>
+
+            {/* ── Table ── */}
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                  <th style={{ padding: "11px 20px", textAlign: "left", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", userSelect: "none" }}>
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>Month <ArrowDownRight size={10} /></span>
-                  </th>
-                  {reportTab === "cashflow" ? (
+                  {viewBy === "Month" && (
                     <>
-                      <th style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted }}>Income</th>
-                      <th style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted }}>Expenses</th>
-                      <th style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted }}>Net cash flow</th>
-                    </>
-                  ) : (
-                    <>
-                      <th style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted }}>
-                        {reportTab === "expenses" ? "Expenses" : "Income"}
+                      <th
+                        onClick={() => toggleTableSort("month")}
+                        style={{ padding: "11px 20px", textAlign: "left", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", userSelect: "none" }}
+                      >
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                          Month {getSortIndicator("month") || <ArrowDownRight size={10} />}
+                        </span>
                       </th>
-                      <th style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted }}>Monthly comparison</th>
+                      {reportTab === "cashflow" ? (
+                        <>
+                          <th style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted }}>Income</th>
+                          <th style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted }}>Expenses</th>
+                          <th
+                            onClick={() => toggleTableSort("value")}
+                            style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", userSelect: "none" }}
+                          >
+                            Net cash flow {getSortIndicator("value")}
+                          </th>
+                        </>
+                      ) : (
+                        <>
+                          <th
+                            onClick={() => toggleTableSort("value")}
+                            style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", userSelect: "none" }}
+                          >
+                            {reportTab === "expenses" ? "Expenses" : "Income"} {getSortIndicator("value")}
+                          </th>
+                          <th
+                            onClick={() => toggleTableSort("change")}
+                            style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", userSelect: "none" }}
+                          >
+                            Monthly comparison {getSortIndicator("change")}
+                          </th>
+                        </>
+                      )}
+                    </>
+                  )}
+                  {viewBy === "Category" && (
+                    <>
+                      <th
+                        onClick={() => toggleTableSort("month")}
+                        style={{ padding: "11px 20px", textAlign: "left", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", userSelect: "none" }}
+                      >
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                          Category {getSortIndicator("month") || <ArrowDownRight size={10} />}
+                        </span>
+                      </th>
+                      <th
+                        onClick={() => toggleTableSort("value")}
+                        style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", userSelect: "none" }}
+                      >
+                        Amount {getSortIndicator("value")}
+                      </th>
+                      <th style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted }}>Count</th>
+                      <th
+                        onClick={() => toggleTableSort("change")}
+                        style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", userSelect: "none" }}
+                      >
+                        Share % {getSortIndicator("change")}
+                      </th>
+                    </>
+                  )}
+                  {viewBy === "Summary" && (
+                    <>
+                      <th
+                        onClick={() => toggleTableSort("month")}
+                        style={{ padding: "11px 20px", textAlign: "left", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", userSelect: "none" }}
+                      >
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                          Type {getSortIndicator("month") || <ArrowDownRight size={10} />}
+                        </span>
+                      </th>
+                      <th
+                        onClick={() => toggleTableSort("value")}
+                        style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", userSelect: "none" }}
+                      >
+                        Amount {getSortIndicator("value")}
+                      </th>
+                      <th style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted }}>Count</th>
+                      <th
+                        onClick={() => toggleTableSort("change")}
+                        style={{ padding: "11px 20px", textAlign: "right", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", userSelect: "none" }}
+                      >
+                        Share % {getSortIndicator("change")}
+                      </th>
                     </>
                   )}
                 </tr>
@@ -581,23 +840,21 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
                 {tableRows.length === 0 ? (
                   <tr><td colSpan={4} style={{ padding: "32px 20px", textAlign: "center", color: C.muted, fontSize: 13 }}>No data for this period.</td></tr>
                 ) : tableRows.map((row) => {
-                  const bucket = monthlyBuckets.find(m => m.key === row.key);
-                  return (
-                    <tr key={row.key} style={{ borderBottom: `1px solid ${C.border}`, transition: "background 0.15s ease", cursor: "pointer" }}
-                      onClick={() => {
-                        const [year, month] = row.key.split("-").map(Number);
-                        const from = new Date(year, month - 1, 1).toISOString().slice(0, 10);
-                        const to = new Date(year, month, 0).toISOString().slice(0, 10);
-                        setDateFrom(from); setDateTo(to); setDraftFrom(from); setDraftTo(to);
-                        dedupToast.info(`Filtered to ${row.longLabel}`);
-                      }}
-                      onMouseEnter={e => e.currentTarget.style.background = "var(--surface-muted)"}
-                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                      <td style={{ padding: "13px 20px", fontSize: 13.5, fontWeight: 500, color: C.text }}>{row.longLabel}</td>
-                      {reportTab === "cashflow" ? (
-                        <>
-                          <td style={{ padding: "13px 20px", textAlign: "right", fontSize: 13.5, color: C.text }}>{fmtFull(bucket?.income || 0)}</td>
-                          <td style={{ padding: "13px 20px", textAlign: "right", fontSize: 13.5, color: C.text }}>{fmtFull(bucket?.expense || 0)}</td>
+                  if (viewBy === "Month") {
+                    const bucket = monthlyBuckets.find(m => m.key === row.key);
+                    const [year, month] = row.key.split("-").map(Number);
+                    const from = new Date(year, month - 1, 1).toISOString().slice(0, 10);
+                    const to = new Date(year, month, 0).toISOString().slice(0, 10);
+                    return (
+                      <tr key={row.key} style={{ borderBottom: `1px solid ${C.border}`, transition: "background 0.15s ease", cursor: "pointer" }}
+                        onClick={() => activateDateRange(from, to, row.label)}
+                        onMouseEnter={e => e.currentTarget.style.background = "var(--surface-muted)"}
+                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        <td style={{ padding: "13px 20px", fontSize: 13.5, fontWeight: 500, color: C.text }}>{row.label}</td>
+                        {reportTab === "cashflow" ? (
+                          <>
+                            <td style={{ padding: "13px 20px", textAlign: "right", fontSize: 13.5, color: C.text }}>{fmtFull(bucket?.income || 0)}</td>
+                            <td style={{ padding: "13px 20px", textAlign: "right", fontSize: 13.5, color: C.text }}>{fmtFull(bucket?.expense || 0)}</td>
                           <td style={{ padding: "13px 20px", textAlign: "right", fontSize: 13.5, fontWeight: 600, color: row.current >= 0 ? "#10b981" : "#ef4444" }}>{fmtFull(row.current)}</td>
                         </>
                       ) : (
@@ -616,7 +873,30 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
                         </>
                       )}
                     </tr>
-                  );
+                    );
+                  } else if (viewBy === "Category") {
+                    return (
+                      <tr key={row.key} style={{ borderBottom: `1px solid ${C.border}`, transition: "background 0.15s ease" }}
+                        onMouseEnter={e => e.currentTarget.style.background = "var(--surface-muted)"}
+                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        <td style={{ padding: "13px 20px", fontSize: 13.5, fontWeight: 500, color: C.text }}>{row.label}</td>
+                        <td style={{ padding: "13px 20px", textAlign: "right", fontSize: 13.5, color: C.text }}>{fmtFull(row.current)}</td>
+                        <td style={{ padding: "13px 20px", textAlign: "right", fontSize: 13.5, color: C.muted }}>{row.count}</td>
+                        <td style={{ padding: "13px 20px", textAlign: "right", fontSize: 13.5, fontWeight: 600, color: C.text }}>{row.pct}%</td>
+                      </tr>
+                    );
+                  } else if (viewBy === "Summary") {
+                    return (
+                      <tr key={row.key} style={{ borderBottom: `1px solid ${C.border}`, transition: "background 0.15s ease" }}
+                        onMouseEnter={e => e.currentTarget.style.background = "var(--surface-muted)"}
+                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        <td style={{ padding: "13px 20px", fontSize: 13.5, fontWeight: 500, color: C.text }}>{row.label}</td>
+                        <td style={{ padding: "13px 20px", textAlign: "right", fontSize: 13.5, color: C.text }}>{fmtFull(row.current)}</td>
+                        <td style={{ padding: "13px 20px", textAlign: "right", fontSize: 13.5, color: C.muted }}>{row.count}</td>
+                        <td style={{ padding: "13px 20px", textAlign: "right", fontSize: 13.5, fontWeight: 600, color: C.text }}>{row.pct}%</td>
+                      </tr>
+                    );
+                  }
                 })}
               </tbody>
             </table>
@@ -699,4 +979,3 @@ function ReportsTab({ apiTransactions = [], isMobile = false, preferredCurrency:
 }
 
 export default ReportsTab;
-

@@ -179,7 +179,7 @@ export default function ProfileDropdown() {
             {/* PREFERENCES */}
             <SectionLabel label="Preferences" />
             <div style={{ background: "var(--bg-secondary)", margin: "0 12px", borderRadius: 12, border: "1px solid var(--border-subtle)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
-              <Row icon={SlidersHorizontal} label="Spending Settings" onClick={() => { navigate(`${ROUTES.DASHBOARD}?nav=spending`); setProfileOpen(false); }} />
+              <Row icon={SlidersHorizontal} label="Spending Settings" onClick={() => { navigate(`${ROUTES.DASHBOARD}?nav=spending&spend=settings`); setProfileOpen(false); }} />
               <Row icon={BrainCircuit} label="AI Financial Profile" onClick={() => { navigate("/profile?tab=aiprofile"); setProfileOpen(false); }} />
               <div style={{ position: "relative" }}>
                 <Row

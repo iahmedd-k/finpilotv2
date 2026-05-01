@@ -399,7 +399,11 @@ function ForecastPage({ C, monthlyChart, apiTransactions, effectiveForecast, isM
     saveCustomizationsMutation.mutate({ events: sanitizedEvents, customData });
   };
 
-  const addEvent = (tpl) => { setDraftEvents((prev) => [...prev, { type: tpl.type, enabled: true, details: { ...tpl.details } }]); setCollapsedEventIndexes((prev) => prev.filter((i) => i >= 0)); };
+  const addEvent = (tpl) => { 
+    const newIndex = draftEvents.length;
+    setDraftEvents((prev) => [...prev, { type: tpl.type, enabled: true, details: { ...tpl.details } }]); 
+    setCollapsedEventIndexes((prev) => [...prev.filter((i) => i >= 0), newIndex]); 
+  };
   const updateEventDetail = (index, key, value) => { setDraftEvents((prev) => prev.map((e, i) => i !== index ? e : { ...e, details: { ...(e.details || {}), [key]: value } })); };
   const toggleEventCollapsed = (index) => { setCollapsedEventIndexes((prev) => prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]); };
   const removeDraftEvent = (index) => { setDraftEvents((prev) => prev.filter((_, i) => i !== index)); setCollapsedEventIndexes((prev) => prev.filter((i) => i !== index).map((i) => i > index ? i - 1 : i)); };
@@ -679,13 +683,12 @@ function ForecastPage({ C, monthlyChart, apiTransactions, effectiveForecast, isM
                       </div>
                     );
                   }} />
+                  <Area type="monotone" dataKey="balance" stroke="none" fill="url(#cfGradient)" isAnimationActive={false} />
                   <Line type="monotone" dataKey="balance" stroke="#3b82f6" strokeWidth={2} strokeDasharray="3 3"
                     dot={({ cx, cy, payload }) => payload?.milestone ? <circle cx={cx} cy={cy} r={3} fill="#3b82f6" stroke={C.white} strokeWidth={2} /> : null}
                     activeDot={{ r: 6, fill: "#3b82f6", stroke: C.white, strokeWidth: 2 }}
-                    fill="url(#cfGradient)"
                     isAnimationActive={false}
                   />
-                  <Area type="monotone" dataKey="balance" stroke="none" fill="url(#cfGradient)" />
                 </LineChart>
               </ResponsiveContainer>
               <div style={{ display: "flex", gap: 16, justifyContent: isMobile ? "flex-start" : "flex-end", padding: isMobile ? "8px 12px 12px" : "8px 24px 16px", borderTop: `1px solid ${C.border}`, flexWrap: "wrap" }}>
@@ -819,22 +822,22 @@ function ForecastPage({ C, monthlyChart, apiTransactions, effectiveForecast, isM
         <div style={{ position: "fixed", inset: 0, background: "rgba(15, 23, 42, 0.5)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 1100, padding: isMobile ? 0 : 16 }} onClick={closeSettingsModal}>
           <div style={{ background: C.white, borderRadius: isMobile ? "16px 16px 0 0" : 16, width: "100%", maxWidth: isMobile ? "100%" : 680, maxHeight: isMobile ? "90vh" : "88vh", border: `1px solid ${C.border}`, boxShadow: "0 24px 60px rgba(0,0,0,0.24)", overflow: "hidden", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
             {/* Header (Premium Overline Style) */}
-            <div style={{ padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--bg-card)", borderBottom: `1px solid ${C.border}` }}>
+            <div style={{ padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.white, borderBottom: `1px solid ${C.border}` }}>
               <div style={{ display: "flex", flexDirection: "column" }}>
                 <span style={{ 
-                  fontSize: 10, fontWeight: 700, color: "var(--text-muted)", 
+                  fontSize: 10, fontWeight: 700, color: C.muted, 
                   textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 4 
                 }}>
                   {modalTab === "events" ? "Financial events" : "Forecast assumptions"}
                 </span>
-                <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text-primary)", letterSpacing: "-0.01em" }}>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.text, letterSpacing: "-0.01em" }}>
                   Add events or customize
                 </div>
               </div>
               <button type="button" onClick={closeSettingsModal}
                 style={{ 
                   width: 32, height: 32, borderRadius: 8, border: "none", 
-                  background: "var(--surface-muted)", color: "var(--text-muted)", cursor: "pointer",
+                  background: C.bg, color: C.muted, cursor: "pointer",
                   display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" 
                 }}>
                 <X size={18} />
@@ -852,6 +855,12 @@ function ForecastPage({ C, monthlyChart, apiTransactions, effectiveForecast, isM
             <div style={{ padding: isMobile ? "14px 16px" : "16px 20px", overflowY: "auto", flex: 1 }}>
               {modalTab === "events" && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                  {/* Info banner */}
+                  <div style={{ padding: "10px 12px", background: "rgba(59, 130, 246, 0.08)", border: `1px solid rgba(59, 130, 246, 0.2)`, borderRadius: 10, display: "flex", alignItems: "flex-start", gap: 8 }}>
+                    <Info size={14} style={{ color: "#3B82F6", flexShrink: 0, marginTop: 1 }} />
+                    <span style={{ fontSize: 11, color: C.text, lineHeight: 1.4 }}>Changes to events will be reflected in the forecast after you click "Save".</span>
+                  </div>
+
                   {/* Your Events Section */}
                   <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                     <p style={{ fontSize: 13, fontWeight: 700, color: C.text, margin: 0, opacity: 0.8 }}>Your events</p>
@@ -874,8 +883,8 @@ function ForecastPage({ C, monthlyChart, apiTransactions, effectiveForecast, isM
                                 transition: "background 0.2s"
                               }}
                               onClick={() => toggleEventCollapsed(index)}
-                              onMouseEnter={(e) => e.currentTarget.style.background = C.bg}
-                              onMouseLeave={(e) => e.currentTarget.style.background = C.white}
+                              onMouseEnter={(e) => { e.currentTarget.style.background = C.bg; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.background = C.white; }}
                             >
                               <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
                                 <div style={{ width: 36, height: 36, borderRadius: "50%", background: "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", color: C.muted }}>
@@ -951,8 +960,8 @@ function ForecastPage({ C, monthlyChart, apiTransactions, effectiveForecast, isM
                             transition: "background 0.2s"
                           }}
                           onClick={() => addEvent(tpl)}
-                          onMouseEnter={(e) => e.currentTarget.style.background = C.bg}
-                          onMouseLeave={(e) => e.currentTarget.style.background = C.white}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = C.bg; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = C.white; }}
                         >
                           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                             <div style={{ width: 36, height: 36, borderRadius: "50%", background: "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", color: C.muted }}>

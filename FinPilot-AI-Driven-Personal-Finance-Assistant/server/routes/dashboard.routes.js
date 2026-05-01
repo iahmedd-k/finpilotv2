@@ -6,6 +6,8 @@ const {
   getForecast,
   setBudget,
   getBudget,
+  getSpendingSettings,
+  saveSpendingSettings,
   getForecastCustomizations,
   saveForecastCustomizations,
   resetForecastCustomizations,
@@ -19,6 +21,8 @@ router.get('/summary', protect, getSummary);
 router.get('/forecast', protect, requirePro, getForecast);
 router.post('/budget', protect, setBudget);
 router.get('/budget', protect, getBudget);
+router.get('/spending-settings', protect, getSpendingSettings);
+router.post('/spending-settings', protect, saveSpendingSettings);
 router.post('/export', protect, requirePro, exportDashboardData);
 
 // New forecast customization endpoints
