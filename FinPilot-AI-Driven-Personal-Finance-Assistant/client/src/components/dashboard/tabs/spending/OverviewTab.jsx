@@ -1209,10 +1209,15 @@ export default function OverviewTab({
                       return (
                         <tr
                           key={row.key}
+                          onClick={() => setSelectedMonth(row.key)}
                           style={{ 
                             borderBottom: idx === arr.length - 1 ? "none" : `1px solid ${C.border}`,
-                            background: idx % 2 === 0 ? C.white : "var(--surface-muted)"
+                            background: idx % 2 === 0 ? C.white : "var(--surface-muted)",
+                            cursor: "pointer",
+                            transition: "background 0.2s ease",
                           }}
+                          onMouseEnter={(e) => e.currentTarget.style.background = "var(--surface-muted)"}
+                          onMouseLeave={(e) => e.currentTarget.style.background = idx % 2 === 0 ? C.white : "var(--surface-muted)"}
                         >
                           <td style={{ padding: "12px 16px", fontSize: 13, color: C.text, fontWeight: 500 }}>{row.month}</td>
                           <td style={{ padding: "12px 16px", textAlign: "right", fontSize: 13, color: "#16a34a", fontWeight: 500 }}>
